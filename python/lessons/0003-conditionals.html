@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 3 课：条件分支与逻辑运算</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js"></script>
+</head>
+<body>
+
+<h1>第 3 课：条件分支与逻辑运算</h1>
+<p class="subtitle">Python 基本语法 · 约 12 分钟 · 前置：<a href="0002-lists-and-for-loops.html">第 2 课</a></p>
+
+<h2>本课目标</h2>
+<p>你上节课已经自己用对了 <code>if</code>，所以这课节奏快一点：补齐 <code>elif</code>/<code>else</code>、逻辑运算符，最后用一道经典笔试题 <strong>FizzBuzz</strong> 收尾。</p>
+
+<h2>1. if / elif / else</h2>
+<pre><code>score = 85
+if score >= 90:
+    print("优秀")
+elif score >= 60:      # elif = else if，可以有多个
+    print("及格")
+else:
+    print("不及格")</code></pre>
+<p>从上往下逐个判断，<strong>命中第一个就停</strong>，后面的不再看。所以条件的顺序很重要。</p>
+
+<h2>2. 比较与逻辑运算符</h2>
+<table>
+<tr><th>写法</th><th>含义</th><th>注意</th></tr>
+<tr><td><code>==</code> / <code>!=</code></td><td>等于 / 不等于</td><td><code>=</code> 是赋值，<code>==</code> 才是比较</td></tr>
+<tr><td><code>and</code> / <code>or</code> / <code>not</code></td><td>与 / 或 / 非</td><td>是英文单词，不是 <code>&amp;&amp;</code> <code>||</code> <code>!</code></td></tr>
+<tr><td><code>18 &lt;= age &lt; 60</code></td><td>链式比较</td><td>Python 特色，可以连着写</td></tr>
+<tr><td><code>x in nums</code></td><td>成员判断</td><td>list、str 都能用</td></tr>
+</table>
+<pre><code>age = 25
+if 18 <= age < 60 and age != 30:
+    print("符合条件")
+
+if "王" in "小王":       # in 判断子串
+    print("找到了")</code></pre>
+
+<h2>3. 取余运算 %：笔试高频</h2>
+<pre><code>7 % 3      # 1 —— 7 除以 3 的余数
+6 % 3      # 0 —— 余数为 0 说明整除
+n % 2 == 0   # 判断偶数的标准写法</code></pre>
+
+<h2>随堂检验</h2>
+<div id="q1"></div>
+<div id="q2"></div>
+<div id="q3"></div>
+<script>
+quiz("q1", "score = 90 时，if score >= 90: A / elif score >= 60: B 打印什么？",
+  ["只打印 A", "只打印 B", "打印 A 和 B"],
+  0, "命中第一个分支就停，elif 不再判断。");
+quiz("q2", "Python 中「与」运算的写法是？",
+  ["&&", "and", "AND"],
+  1, "逻辑运算符是小写英文单词：and / or / not。");
+quiz("q3", "15 % 5 的值是？",
+  ["3", "0", "5"],
+  1, "15 能被 5 整除，余数为 0。");
+</script>
+
+<h2>动手练习：FizzBuzz（经典笔试题）</h2>
+<p>写一段代码，遍历 1 到 20（提示：<code>range(1, 21)</code>）：</p>
+<ul>
+<li>能被 3 和 5 同时整除 → 打印 <code>FizzBuzz</code></li>
+<li>只能被 3 整除 → 打印 <code>Fizz</code></li>
+<li>只能被 5 整除 → 打印 <code>Buzz</code></li>
+<li>其他 → 打印数字本身</li>
+</ul>
+<div class="note">提示：分支顺序很关键——想想为什么「同时整除」必须放在最前面判断。这道题建议写成 <code>fizzbuzz.py</code> 文件跑（REPL 里写多行容易缩进出错），写完发我点评。</div>
+
+<h2>延伸阅读（首选资源）</h2>
+<p>📖 <a href="https://docs.python.org/zh-cn/3/tutorial/controlflow.html#if-statements">官方教程 · 4.1 if 语句</a> · <a href="https://docs.python.org/zh-cn/3/library/stdtypes.html#boolean-operations-and-or-not">布尔运算参考</a></p>
+
+<div class="note">💬 卡住随时回对话里问我。下一课预告：<strong>函数 def</strong>——把 FizzBuzz 包成可复用的函数。</div>
+
+<p><a href="../reference/python-basics-cheatsheet.html">→ 速查表（已更新本课内容）</a> · <a href="0002-lists-and-for-loops.html">← 第 2 课</a></p>
+
+</body>
+</html>

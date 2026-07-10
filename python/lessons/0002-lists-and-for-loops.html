@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 2 课：list 与 for 循环</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js"></script>
+</head>
+<body>
+
+<h1>第 2 课：list 与 for 循环</h1>
+<p class="subtitle">Python 基本语法 · 约 12 分钟 · 前置：<a href="0001-variables-and-types.html">第 1 课</a></p>
+
+<h2>本课目标</h2>
+<p>会创建和操作 list（列表），会用 <code>for</code> 循环遍历，会用 <code>range()</code>。这是笔试题中出现频率最高的组合。</p>
+
+<h2>1. list：有序、可变、什么都能装</h2>
+<pre><code>scores = [90, 85, 77]
+names = ["小王", "小李"]
+
+scores[0]        # 90 —— 下标从 0 开始
+scores[-1]       # 77 —— 负数从尾部数，-1 是最后一个
+len(scores)      # 3  —— 长度
+scores.append(60)   # 尾部追加 → [90, 85, 77, 60]</code></pre>
+<div class="note">你写过其他语言，注意两个 Python 特色：<strong>负下标</strong>（<code>[-1]</code> 取末尾）和 <code>len()</code> 是函数不是方法（写 <code>len(x)</code> 不是 <code>x.length</code>）。</div>
+
+<h2>2. for 循环：直接遍历元素</h2>
+<p>Python 的 <code>for</code> 不是 <code>for (i=0; i&lt;n; i++)</code>，而是直接拿到每个元素：</p>
+<pre><code>for name in names:
+    print(f"你好, {name}")</code></pre>
+<pre class="output"><code>你好, 小王
+你好, 小李</code></pre>
+<div class="note"><strong>缩进就是语法。</strong>循环体必须缩进（惯例 4 个空格），没有花括号。缩进错了程序直接报错或逻辑改变——这是 Python 和其他语言最大的不同。</div>
+
+<h2>3. range()：需要数字序列时</h2>
+<pre><code>for i in range(5):        # 0, 1, 2, 3, 4 —— 不含 5
+    print(i)
+
+for i in range(1, 4):     # 1, 2, 3 —— 含头不含尾
+    print(i)</code></pre>
+<p>「含头不含尾」是 Python 的通用约定，切片也一样，记住这一条能避开一大类 off-by-one 错误。</p>
+
+<h2>4. 组合拳：累加</h2>
+<pre><code>scores = [90, 85, 77]
+total = 0
+for s in scores:
+    total = total + s     # 也可写 total += s
+print(f"平均分 {total / len(scores)}")</code></pre>
+<pre class="output"><code>平均分 84.0</code></pre>
+
+<h2>随堂检验</h2>
+<div id="q1"></div>
+<div id="q2"></div>
+<div id="q3"></div>
+<script>
+quiz("q1", "nums = [10, 20, 30]，nums[-1] 的值是？",
+  ["10", "30", "报错"],
+  1, "-1 表示最后一个元素，-2 是倒数第二个。");
+quiz("q2", "range(3) 产生哪些数字？",
+  ["1, 2, 3", "0, 1, 2", "0, 1, 2, 3"],
+  1, "从 0 开始，含头不含尾，所以不包括 3。");
+quiz("q3", "for 循环体如何标记？",
+  ["用花括号包住", "用缩进来标记", "用 end 结尾"],
+  1, "缩进就是语法，惯例是 4 个空格。");
+</script>
+
+<h2>动手练习（真实反馈环）</h2>
+<p>在 <code>python3</code> 交互式解释器里完成，然后把代码发给我点评：</p>
+<ol>
+<li>创建一个 list 装 3 个你喜欢的价格数字</li>
+<li>用 for 循环算出总和，用 f-string 打印「总价 ___ 元」</li>
+<li>加分题：只打印其中大于 50 的价格（提示：循环体里可以再写 <code>if p &gt; 50:</code>，同样靠缩进）</li>
+</ol>
+
+<h2>延伸阅读（首选资源）</h2>
+<p>📖 <a href="https://docs.python.org/zh-cn/3/tutorial/introduction.html#lists">官方教程 · 3.1.3 列表</a> 和 <a href="https://docs.python.org/zh-cn/3/tutorial/controlflow.html#for-statements">4.2 for 语句</a> —— 权威出处。</p>
+
+<div class="note">💬 卡住随时回对话里问我。下一课预告：<strong>if 条件与比较运算</strong>，配合 list + for 就能做真正的笔试题了。</div>
+
+<p><a href="../reference/python-basics-cheatsheet.html">→ 速查表（已更新本课内容）</a> · <a href="0001-variables-and-types.html">← 第 1 课</a></p>
+
+</body>
+</html>
