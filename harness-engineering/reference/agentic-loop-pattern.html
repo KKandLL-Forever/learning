@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>速查：Agentic Loop 模式</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+</head>
+<body>
+
+<h1>速查：Agentic Loop 模式</h1>
+
+<p><strong>Agentic Loop</strong> 是所有 AI Harness 的基础骨架。把这个模式背下来。</p>
+
+<pre><code class="language-plaintext">while (循环未结束) {
+  1. 把 { 用户输入 + 历史消息 + 工具定义 } 发给 LLM
+  2. 流式接收 LLM 输出（文本 或 tool_use）
+  3. 如果输出是文本 → 结束循环，返回给用户
+  4. 如果输出是 tool_use → 执行工具，把结果塞回历史消息
+  5. 回到步骤 1
+}</code></pre>
+
+<h2>关键抽象</h2>
+
+<table style="width:100%; border-collapse: collapse; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding:0.5rem;">组件</th>
+      <th style="text-align:left; padding:0.5rem;">职责</th>
+      <th style="text-align:left; padding:0.5rem;">可替换？</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;"><code>ModelAdapter</code></td>
+      <td style="padding:0.5rem;">封装 LLM 调用，统一 chunk 格式</td>
+      <td style="padding:0.5rem;">✓ DeepSeek / OpenAI / 本地模型</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;"><code>ToolRegistry</code></td>
+      <td style="padding:0.5rem;">管理工具定义，执行工具并隔离错误</td>
+      <td style="padding:0.5rem;">✓ 按需增删工具</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;"><code>Agent Loop</code></td>
+      <td style="padding:0.5rem;">编排模型调用、工具执行、状态流转</td>
+      <td style="padding:0.5rem;">✗ 核心逻辑，一般不动</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>错误处理原则</h2>
+
+<ul>
+  <li>工具执行失败 → 把错误信息作为 <code>tool_result</code> 返回给模型，让模型决定重试或解释</li>
+  <li>模型 API 失败 → 抛异常给外层，记录日志，可配置重试</li>
+  <li>循环超过最大轮数 → 安全退出，返回已生成的内容</li>
+</ul>
+
+<h2>消息历史格式</h2>
+
+<pre><code class="language-javascript">[
+  { role: "system", content: "你是一个 helpful 助手。" },
+  { role: "user", content: "北京今天天气怎么样？" },
+  { role: "assistant", content: "我帮你查一下北京的天气。" },
+  { role: "user", content: [
+    { type: "tool_result", tool_use_id: "tool_1", content: "北京当前天气：晴天，25°C" }
+  ]}
+]</code></pre>
+
+<footer>
+  <p>
+    📖 <a href="../lessons/0002-single-agent-loop.html">回到第 0002 课</a>
+    &nbsp;·&nbsp;
+    <a href="design-patterns.html">速查：单 Agent 循环中的设计模式与范式</a>
+  </p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+</body>
+</html>

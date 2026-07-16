@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 0001 课：Prompt 的解剖学</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+</head>
+<body>
+
+<h1>第 0001 课：Prompt 的解剖学</h1>
+
+<p>
+  很多人写 Prompt 靠"感觉"——想到哪写到哪，效果好不好全凭运气。这一课我们把 Prompt <strong>拆开</strong>：一个高质量 Prompt 由五个部件组成。搞清楚每个部件干什么，你就能像搭积木一样，稳定地写出好 Prompt，而不是碰运气。
+</p>
+
+<div class="insight">
+  写 Prompt 的本质，是<strong>替一个什么都懂、但什么都不知道你要什么的实习生写工单</strong>。它知识渊博（预训练），但对你的具体任务、语气、格式偏好一无所知。你给的信息越结构化、越明确，它交付得越准。
+</div>
+
+<h2>一个反面例子</h2>
+
+<p>先看一条几乎所有人都写过的"坏 Prompt"：</p>
+
+<pre><code class="language-plaintext">帮我写一下这个产品的介绍</code></pre>
+
+<p>模型只能瞎猜：什么产品？给谁看？多长？什么语气？要不要卖点？于是它给你一段四平八稳、放之四海皆可的"正确的废话"。问题不在模型，在于<strong>你没给它足够的约束</strong>。</p>
+
+<h2>Prompt 的五个部件</h2>
+
+<div class="diagram">
+  <svg width="520" height="280" viewBox="0 0 520 280">
+    <rect x="60" y="10" width="400" height="44" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="260" y="30" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">① 角色 / 身份 Role</text>
+    <text x="260" y="46" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="10" fill="#555">"你是一位资深文案" —— 设定视角和语气</text>
+
+    <rect x="60" y="64" width="400" height="44" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="260" y="84" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">② 任务 / 指令 Instruction</text>
+    <text x="260" y="100" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="10" fill="#555">到底要它做什么 —— 用动词，越具体越好</text>
+
+    <rect x="60" y="118" width="400" height="44" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="260" y="138" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">③ 上下文 / 输入 Context</text>
+    <text x="260" y="154" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="10" fill="#555">它需要的原始材料 —— 产品信息、受众、背景</text>
+
+    <rect x="60" y="172" width="400" height="44" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="260" y="192" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">④ 示例 Examples（可选）</text>
+    <text x="260" y="208" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="10" fill="#555">给一两个样例 —— 比长篇描述更省事</text>
+
+    <rect x="60" y="226" width="400" height="44" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="260" y="246" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">⑤ 输出格式 Output Format</text>
+    <text x="260" y="262" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="10" fill="#555">要 Markdown？JSON？多少字？先说清楚</text>
+  </svg>
+</div>
+
+<p>不是每条 Prompt 都要五个部件全上。但当结果不理想时，<strong>对照这五项逐个检查缺了哪个</strong>，往往一补就好。</p>
+
+<h3>① 角色（Role）</h3>
+<p>给模型一个身份，等于一次性设定了它的视角、语气和知识侧重。<code>"你是一位面向开发者的技术文案"</code> 和 <code>"你是一位面向宝妈的带货主播"</code>，写出来的东西天差地别。</p>
+
+<h3>② 任务（Instruction）</h3>
+<p>核心动词要明确：是"写"、"改写"、"总结"、"翻译"、还是"挑错"？把模糊的"处理一下"换成精确的动作。</p>
+
+<h3>③ 上下文（Context）</h3>
+<p>模型不知道你脑子里的信息。产品叫什么、卖点是什么、给谁看——这些<strong>它猜不到的，必须喂给它</strong>。</p>
+
+<h3>④ 示例（Examples）</h3>
+<p>与其用三段话描述你想要的风格，不如直接给一个例子。"照着这个样子写"是最高效的指令之一（下一课会专门讲）。</p>
+
+<h3>⑤ 输出格式（Output Format）</h3>
+<p>不指定，模型就自由发挥。你要 200 字以内、要三个要点、要 JSON——<strong>提前说清楚</strong>，省得来回返工。</p>
+
+<h2>把反面例子改好</h2>
+
+<p>用五个部件重写开头那条"坏 Prompt"：</p>
+
+<pre><code class="language-plaintext">你是一位面向开发者的技术文案。                    ← ① 角色
+
+请为下面这款产品写一段介绍。                      ← ② 任务
+
+产品：一个叫 QuickAPI 的工具，                     ← ③ 上下文
+能把 OpenAPI 文档一键转成可调用的 TypeScript SDK。
+目标读者：正在找 API 客户端方案的前端工程师。
+
+参考这段的语气（简洁、点出痛点）：                 ← ④ 示例
+"还在手写 fetch？QuickAPI 让你少写 80% 的样板代码。"
+
+要求：150 字以内，Markdown，先痛点后卖点。         ← ⑤ 输出格式</code></pre>
+
+<p>同一个模型，拿到这两条 Prompt，输出质量的差距是数量级的。差别不在模型，在于<strong>你有没有把"工单"写清楚</strong>。</p>
+
+<h2>system 与 user：两个角色的分工</h2>
+
+<p>在调 API 时，Prompt 通常拆进两个角色。理解它们的分工，是从"聊天框里贴 Prompt"进阶到"工程化用 Prompt"的关键一步：</p>
+
+<ul>
+  <li><strong>system（系统提示）</strong>：设定<em>稳定不变</em>的部分——角色、总体规则、输出格式约束。它像 Agent 的"人格设定"，一次设定、贯穿整段对话。</li>
+  <li><strong>user（用户消息）</strong>：放<em>每次都变</em>的部分——这一轮的具体任务和输入。</li>
+</ul>
+
+<p>用第 0002 课的 <code>DeepSeekModel</code>（OpenAI 兼容接口）来看就很直观：</p>
+
+<pre><code class="language-typescript">const res = await client.chat.completions.create({
+  model: "deepseek-chat",
+  messages: [
+    // system：稳定的角色 + 规则 + 格式（部件 ①⑤）
+    {
+      role: "system",
+      content: "你是一位面向开发者的技术文案。回答控制在 150 字以内，用 Markdown，先痛点后卖点。",
+    },
+    // user：每次变化的任务 + 上下文 + 示例（部件 ②③④）
+    {
+      role: "user",
+      content: "为 QuickAPI 写一段介绍。它能把 OpenAPI 文档一键转成 TypeScript SDK，读者是前端工程师。",
+    },
+  ],
+});</code></pre>
+
+<div class="insight">
+  为什么要拆开？因为 <strong>system 是可以复用和缓存的</strong>。在一个 Agent 里，"人格设定"（system）写一次，之后每一轮对话只需要换 user。这正好呼应 Harness 课程里 <code>Agent</code> 的 <code>systemPrompt</code> 字段——它设定一次，贯穿整个循环。
+</div>
+
+<h2>三条立刻能用的原则</h2>
+
+<ol>
+  <li><strong>具体 &gt; 客气。</strong>"请尽量写好一点"没有信息量；"150 字以内、先痛点后卖点"才有。</li>
+  <li><strong>给约束，而非给期望。</strong>不要"写得专业些"，要"用第二人称、不用感叹号、每段不超过两句"。</li>
+  <li><strong>结果不对，先查五部件。</strong>八成是漏了角色、上下文或输出格式中的某一个。</li>
+</ol>
+
+<h2>小测验</h2>
+
+<div class="quiz" id="q1">
+  <h3>第 1 题</h3>
+  <p>"帮我写一下这个产品的介绍"这条 Prompt 最主要缺了什么？</p>
+  <div class="quiz-options">
+    <div class="quiz-option" data-value="a">缺少礼貌用语，模型会不高兴</div>
+    <div class="quiz-option" data-value="b">缺少上下文、受众和输出格式等约束</div>
+    <div class="quiz-option" data-value="c">用了中文，应该用英文写 Prompt</div>
+    <div class="quiz-option" data-value="d">没什么问题，是模型能力不够</div>
+  </div>
+  <div class="quiz-feedback"></div>
+  <button class="quiz-btn" style="opacity:0.5; cursor:default;">先选答案，再点这里</button>
+</div>
+
+<div class="quiz" id="q2">
+  <h3>第 2 题</h3>
+  <p>关于 system 和 user 消息的分工，下面哪个说法是对的？</p>
+  <div class="quiz-options">
+    <div class="quiz-option" data-value="a">system 放每轮都变的具体任务，user 放固定规则</div>
+    <div class="quiz-option" data-value="b">system 放稳定的角色和规则，user 放每轮变化的任务</div>
+    <div class="quiz-option" data-value="c">两者完全一样，随便放哪个都行</div>
+    <div class="quiz-option" data-value="d">system 只能写英文，user 只能写中文</div>
+  </div>
+  <div class="quiz-feedback"></div>
+  <button class="quiz-btn" style="opacity:0.5; cursor:default;">先选答案，再点这里</button>
+</div>
+
+<h2>动手任务</h2>
+
+<ol>
+  <li>挑一条你最近随手写过的 Prompt，用五部件逐项检查，补全缺失的部分，对比前后输出。</li>
+  <li>把它拆成 system + user 两段：哪些内容属于"设定一次就不变"的 system？</li>
+  <li>把这段 system 填进 Harness 课程里 <code>Agent</code> 的 <code>systemPrompt</code>，让你的 Agent 带上这个"人格"。</li>
+</ol>
+
+<h2>下一课预告</h2>
+
+<p>第 0002 课：<strong>清晰与具体</strong>——消除 Prompt 里歧义的六个技巧，让模型少猜、多做对。</p>
+
+<footer>
+  <nav>
+    <a href="0000-what-is-prompt-engineering.html">← 上一课：什么是 Prompt Engineering</a>
+    <a href="../index.html">课程目录 →</a>
+  </nav>
+  <p style="margin-top: 1rem;">
+    <strong>相关：</strong>
+    <a href="../../harness-engineering/lessons/0002-single-agent-loop.html">Harness 第 0002 课：Agent 的 systemPrompt 字段</a>
+  </p>
+  <p style="margin-top: 0.5rem;">
+    💬 <em>有问题？向你的 AI 老师提问——我随时为你解答不清楚的地方。</em>
+  </p>
+</footer>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  const btn = quiz.querySelector('.quiz-btn');
+  let selected = null;
+  let submitted = false;
+
+  options.forEach(opt => {
+    opt.addEventListener('click', () => {
+      if (submitted) return;
+      options.forEach(o => o.classList.remove('selected'));
+      opt.classList.add('selected');
+      selected = opt.dataset.value;
+      btn.textContent = '选好了，检查答案';
+      btn.style.opacity = '1';
+      btn.style.cursor = 'pointer';
+    });
+  });
+
+  btn.addEventListener('click', () => {
+    if (!selected) return;
+    submitted = true;
+    const correct = quiz.id === 'q1' ? 'b' : 'b';
+    const isCorrect = selected === correct;
+
+    options.forEach(o => {
+      if (o.dataset.value === correct) o.classList.add('correct');
+      if (o.dataset.value === selected && !isCorrect) o.classList.add('incorrect');
+    });
+
+    const wrongHint = quiz.id === 'q1'
+      ? '✗ 不对。模型没那么脆弱——问题是它缺少必要的约束（上下文、受众、格式），只能瞎猜。'
+      : '✗ 不对。记住：system = 稳定的人格与规则，user = 每轮变化的任务。';
+    feedback.textContent = isCorrect ? '✓ 正确！' : wrongHint;
+    feedback.className = 'quiz-feedback ' + (isCorrect ? 'correct' : 'incorrect');
+    btn.textContent = '已提交';
+    btn.style.opacity = '0.4';
+    btn.style.cursor = 'not-allowed';
+    btn.disabled = true;
+    options.forEach(o => o.style.pointerEvents = 'none');
+  });
+});
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+</body>
+</html>

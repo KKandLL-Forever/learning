@@ -1,0 +1,40 @@
+# 依赖
+node_modules/
+**/node_modules/
+
+# 密钥与本地环境（绝不提交）
+.env
+**/.env
+.env.local
+**/.env.local
+# 保留示例模板
+!.env.example
+!**/.env.example
+
+# 构建产物
+dist/
+build/
+**/dist/
+**/build/
+*.tsbuildinfo
+
+# 日志
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+
+# Python（仓库根目录另有 python/ 内容）
+__pycache__/
+*.pyc
+.venv/
+venv/

@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 0002 课：构建单 Agent 循环</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+</head>
+<body>
+
+<h1>第 0002 课：构建单 Agent 循环</h1>
+
+<p>第 1 课我们看了 Harness 的最简形式——一个 <code>while(true)</code> 循环。这一课我们把它扩展成一个<strong>结构清晰、可运行、可扩展</strong>的单 Agent 循环项目。</p>
+
+<div class="insight">
+  一个好的 Harness 不是把逻辑写死在一个文件里，而是拆出清晰的边界：Model Adapter、Tool Registry、Agent Loop。这样你才能在不改核心循环的前提下，换模型、加工具、改 UI。
+</div>
+
+<h2>本课目标</h2>
+
+<p>完成本课后，你将拥有一个可运行的 TypeScript 项目，实现以下能力：</p>
+
+<ul>
+  <li>工具注册与发现（Tool Registry）</li>
+  <li>Model Adapter 抽象（mock + DeepSeek 两种实现）</li>
+  <li>流式输出（streaming）</li>
+  <li>工具执行错误处理</li>
+  <li>对话历史管理</li>
+</ul>
+
+<h2>项目结构</h2>
+
+<pre><code class="language-plaintext">src/0002-single-agent-loop/
+├── types.ts      # 类型定义
+├── model.ts      # Model Adapter（Mock + DeepSeek）
+├── tools.ts      # 工具注册与工具函数
+├── agent.ts      # Agent 循环核心
+└── main.ts       # 入口示例
+</code></pre>
+
+<h2>核心设计：三个边界</h2>
+
+<div class="diagram">
+  <svg width="560" height="200" viewBox="0 0 560 200">
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+        <path d="M0,0 L8,3 L0,6 Z" fill="#c44"/>
+      </marker>
+    </defs>
+    <rect x="20" y="70" width="130" height="60" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="85" y="105" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">Model Adapter</text>
+
+    <rect x="215" y="70" width="130" height="60" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="280" y="105" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">Agent Loop</text>
+
+    <rect x="410" y="70" width="130" height="60" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="475" y="105" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">Tool Registry</text>
+
+    <line x1="150" y1="100" x2="213" y2="100" stroke="#c44" stroke-width="2" marker-end="url(#arrow)"/>
+    <line x1="345" y1="100" x2="408" y2="100" stroke="#c44" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <text x="280" y="50" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="11" fill="#555">编排（Orchestration）</text>
+    <text x="280" y="175" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="11" fill="#555">Model 与 Tool 可以独立替换</text>
+  </svg>
+</div>
+
+<h2>第一步：定义类型</h2>
+
+<p>先把循环里流动的数据抽象成类型。注意这里 <code>MessageContent</code> 支持两种形式：纯文本字符串，或 content block 数组（包含 tool_result）。这是一层我们自己的中间抽象，与具体厂商无关。</p>
+
+<pre><code class="language-typescript">// src/0002-single-agent-loop/types.ts
+export type TextContent = { type: "text"; text: string };
+export type ToolResultContent = {
+  type: "tool_result";
+  tool_use_id: string;
+  content: string;
+};
+export type ContentBlock = TextContent | ToolResultContent;
+export type MessageContent = string | ContentBlock[];
+
+export interface Message {
+  role: "user" | "assistant" | "system";
+  content: MessageContent;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface ToolUse {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface Tool {
+  definition: ToolDefinition;
+  execute(input: Record<string, unknown>): Promise<string> | string;
+}
+
+export interface ModelResponseChunk {
+  type: "text" | "tool_use" | "done";
+  text?: string;
+  toolUse?: ToolUse;
+  result?: AgentResult;
+}
+
+export interface ModelAdapter {
+  stream(messages: Message[], tools: ToolDefinition[]): AsyncIterable<ModelResponseChunk>;
+}
+
+export interface AgentConfig {
+  model: ModelAdapter;
+  systemPrompt?: string;
+  maxTurns?: number;
+}
+
+export interface AgentResult {
+  response: string;
+  messages: Message[];
+  turns: number;
+}</code></pre>
+
+<h2>第二步：工具注册表</h2>
+
+<p>工具是 Harness 的可插拔组件。<code>ToolRegistry</code> 负责三件事：注册工具、查询定义、执行工具并捕获错误。</p>
+
+<pre><code class="language-typescript">// src/0002-single-agent-loop/tools.ts
+export class ToolRegistry {
+  private tools = new Map<string, Tool>();
+
+  register(tool: Tool): this {
+    this.tools.set(tool.definition.name, tool);
+    return this;
+  }
+
+  getAllDefinitions(): ToolDefinition[] {
+    return Array.from(this.tools.values()).map((t) => t.definition);
+  }
+
+  async execute(name: string, input: Record<string, unknown>): Promise<string> {
+    const tool = this.tools.get(name);
+    if (!tool) {
+      throw new Error(`未找到工具：${name}`);
+    }
+    try {
+      const result = await tool.execute(input);
+      return result;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return `工具执行失败：${message}`;
+    }
+  }
+}</code></pre>
+
+<div class="insight">
+  工具执行失败不要抛异常终止循环，而是把错误信息作为 tool_result 返回给模型。模型可以据此重试或解释给用户。这是 Harness 韧性的关键设计。
+</div>
+
+<h2>第三步：Model Adapter</h2>
+
+<p><code>ModelAdapter</code> 把不同 LLM 的 API 差异封装起来，让 Agent Loop 只关心统一的数据结构。我们先实现一个不需要 API Key 的 Mock Model，方便学习时直接运行。</p>
+
+<pre><code class="language-typescript">// src/0002-single-agent-loop/model.ts（节选）
+export class MockModel implements ModelAdapter {
+  private turn = 0;
+
+  async *stream(messages: Message[], tools: ToolDefinition[]) {
+    const input = this.extractText(messages.at(-1)?.content ?? "");
+    this.turn++;
+
+    if (this.turn === 1) {
+      yield { type: "text", text: "我帮你查一下北京的天气。" };
+      yield { type: "tool_use", toolUse: { id: "tool_1", name: "get_weather", input: { city: "北京" } } };
+      return;
+    }
+
+    yield { type: "text", text: `根据查询结果，${input}的天气是晴天，温度 25°C。` };
+  }
+}</code></pre>
+
+<p>同一文件里还包含 <code>DeepSeekModel</code>，它用 OpenAI 兼容 SDK（把 <code>baseURL</code> 指向 <code>https://api.deepseek.com</code>）连接 DeepSeek，并把流式返回的 chunk 转换成我们的 <code>ModelResponseChunk</code>。学完本课后，你只需要把 <code>main.ts</code> 里的 <code>MockModel</code> 换成 <code>DeepSeekModel</code>，就能调用真正的 DeepSeek。</p>
+
+<h2>第四步：Agent 循环</h2>
+
+<p>这是核心。我们用 <code>async generator</code> 同时做到两件事：</p>
+
+<ol>
+  <li><strong>流式输出</strong>：边生成边 yield 文本片段</li>
+  <li><strong>循环控制</strong>：检测到 tool_use 就执行工具，再把结果塞回历史</li>
+</ol>
+
+<pre><code class="language-typescript">// src/0002-single-agent-loop/agent.ts（节选）
+async *run(userInput: string) {
+  const messages: Message[] = [];
+  if (this.config.systemPrompt) {
+    messages.push({ role: "system", content: this.config.systemPrompt });
+  }
+  messages.push({ role: "user", content: userInput });
+
+  for (let turn = 0; turn < (this.config.maxTurns ?? 10); turn++) {
+    let turnText = "";
+    const toolUses: ToolUse[] = [];
+
+    // 1. 流式接收模型输出
+    for await (const chunk of this.config.model.stream(
+      messages,
+      this.tools.getAllDefinitions(),
+    )) {
+      yield chunk;
+      if (chunk.type === "text") turnText += chunk.text ?? "";
+      if (chunk.type === "tool_use") toolUses.push(chunk.toolUse!);
+    }
+
+    messages.push({ role: "assistant", content: turnText });
+
+    // 2. 没有工具调用 → 结束循环
+    if (toolUses.length === 0) {
+      yield { type: "done", result: { response: turnText, messages, turns: messages.length } };
+      return;
+    }
+
+    // 3. 执行工具，把结果塞回历史
+    const toolResultBlocks: ContentBlock[] = [];
+    for (const toolUse of toolUses) {
+      const result = await this.tools.execute(toolUse.name, toolUse.input);
+      toolResultBlocks.push({
+        type: "tool_result",
+        tool_use_id: toolUse.id,
+        content: result,
+      });
+    }
+    messages.push({ role: "user", content: toolResultBlocks });
+  }
+}</code></pre>
+
+<h2>第五步：运行它</h2>
+
+<p>先安装依赖：</p>
+
+<pre><code class="language-bash">npm install</code></pre>
+
+<p>然后运行示例：</p>
+
+<pre><code class="language-bash">npm run lesson-0002</code></pre>
+
+<p>你会看到类似输出：</p>
+
+<pre><code class="language-plaintext">用户： 北京今天天气怎么样？
+助手：
+我帮你查一下北京的天气。
+[调用工具] get_weather({"city":"北京"})
+根据查询结果，北京当前天气：晴天，25°C，湿度 45%。
+
+--- 最终结果 ---
+根据查询结果，北京当前天气：晴天，25°C，湿度 45%。
+
+总轮数：5</code></pre>
+
+<p>上面这条路径用的是 <code>MockModel</code>，<strong>不需要任何 API Key</strong>，装完依赖就能直接跑。</p>
+
+<h2>用真实的 DeepSeek 运行（配置 API Key）</h2>
+
+<p>当你把 <code>main.ts</code> 里的模型换成 <code>DeepSeekModel</code> 时，就需要一个真实的 API Key 了。第一步，把 <code>.env.example</code> 复制成 <code>.env</code> 并填入你在 <a href="https://platform.deepseek.com/" target="_blank">DeepSeek 平台</a>申请的 Key：</p>
+
+<pre><code class="language-bash"># .env
+DEEPSEEK_API_KEY=sk-你的真实key
+DEEPSEEK_MODEL=deepseek-chat</code></pre>
+
+<div class="insight">
+  <strong>最容易踩的坑：<code>tsx</code>（以及 Node）默认<em>不会</em>自动加载 <code>.env</code> 文件。</strong>如果你只是把 Key 写进 <code>.env</code> 就直接运行，<code>process.env.DEEPSEEK_API_KEY</code> 依然是空的，DeepSeek 会返回 <code>401 Authentication Fails（auth header format should be Bearer sk-...）</code>——这不是 Key 写错了，而是<strong>根本没被读进来</strong>。
+</div>
+
+<p>解决办法：装上 <code>dotenv</code>，并在入口文件<strong>最顶部</strong>（早于任何其他 import）加载它：</p>
+
+<pre><code class="language-bash">npm install dotenv</code></pre>
+
+<pre><code class="language-typescript">// main.ts —— 必须是第一行 import，否则读取时变量还没加载进来
+import "dotenv/config";
+
+import { Agent } from "./agent.ts";
+import { DeepSeekModel } from "./model.ts";
+// ...
+
+const agent = new Agent(
+  { model: new DeepSeekModel(process.env.DEEPSEEK_API_KEY ?? "") },
+  tools,
+);</code></pre>
+
+<div class="insight">
+  🔐 <code>.env</code> 里是真实密钥，<strong>永远不要提交到版本库</strong>。把 <code>.env</code> 写进 <code>.gitignore</code>，只提交不含密钥的 <code>.env.example</code> 作为模板。
+</div>
+
+<h2>动手任务</h2>
+
+<ol>
+  <li>在 <code>tools.ts</code> 里添加一个新工具 <code>get_time</code>，让 Agent 能回答"现在几点了"。</li>
+  <li>让 <code>MockModel</code> 根据输入中的关键词选择调用不同的工具。</li>
+  <li><strong>进阶</strong>：把 <code>MockModel</code> 换成 <code>DeepSeekModel</code>，在 <code>.env</code> 里填入 <code>DEEPSEEK_API_KEY</code>，看真实的 DeepSeek 如何调用工具。</li>
+</ol>
+
+<h2>小测验</h2>
+
+<div class="quiz" id="q1">
+  <h3>第 1 题</h3>
+  <p>ToolRegistry 的主要职责是什么？</p>
+  <div class="quiz-options">
+    <div class="quiz-option" data-value="a">训练 LLM 模型</div>
+    <div class="quiz-option" data-value="b">管理工具的注册、查询和错误隔离执行</div>
+    <div class="quiz-option" data-value="c">渲染前端界面</div>
+    <div class="quiz-option" data-value="d">处理 HTTP 网络请求</div>
+  </div>
+  <div class="quiz-feedback"></div>
+  <button class="quiz-btn" style="opacity:0.5; cursor:default;">先选答案，再点这里</button>
+</div>
+
+<div class="quiz" id="q2">
+  <h3>第 2 题</h3>
+  <p>为什么工具执行失败时不应该直接抛出异常终止循环？</p>
+  <div class="quiz-options">
+    <div class="quiz-option" data-value="a">因为异常会让程序崩溃</div>
+    <div class="quiz-option" data-value="b">因为应该让模型看到错误并决定下一步</div>
+    <div class="quiz-option" data-value="c">因为工具不会失败</div>
+    <div class="quiz-option" data-value="d">因为异常会消耗更多 token</div>
+  </div>
+  <div class="quiz-feedback"></div>
+  <button class="quiz-btn" style="opacity:0.5; cursor:default;">先选答案，再点这里</button>
+</div>
+
+<h2>下一课预告</h2>
+
+<p>第 3 课，我们会进入 <strong>Level 2</strong>：把单个 Agent 拆成多个，每个负责不同任务，并设计它们之间的消息传递协议。</p>
+
+<footer>
+  <nav>
+    <a href="0001-what-is-harness-engineering.html">← 上一课：什么是 Harness Engineering？</a>
+    <a href="0003-multi-agent-system.html">下一课：多 Agent 系统 →</a>
+  </nav>
+  <p style="margin-top: 1rem;">
+    <strong>推荐阅读：</strong>
+    <a href="../reference/design-patterns.html">速查：本课代码用到的设计模式与范式</a>
+    &nbsp;·&nbsp;
+    <a href="https://api-docs.deepseek.com/" target="_blank">DeepSeek API 文档</a>
+  </p>
+  <p style="margin-top: 0.5rem;">
+    💬 <em>有问题？向你的 AI 老师提问——我随时为你解答不清楚的地方。</em>
+  </p>
+</footer>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  const btn = quiz.querySelector('.quiz-btn');
+  let selected = null;
+  let submitted = false;
+
+  options.forEach(opt => {
+    opt.addEventListener('click', () => {
+      if (submitted) return;
+      options.forEach(o => o.classList.remove('selected'));
+      opt.classList.add('selected');
+      selected = opt.dataset.value;
+      btn.textContent = '选好了，检查答案';
+      btn.style.opacity = '1';
+      btn.style.cursor = 'pointer';
+    });
+  });
+
+  btn.addEventListener('click', () => {
+    if (!selected) return;
+    submitted = true;
+    const correct = quiz.id === 'q1' ? 'b' : 'b';
+    const isCorrect = selected === correct;
+
+    options.forEach(o => {
+      if (o.dataset.value === correct) o.classList.add('correct');
+      if (o.dataset.value === selected && !isCorrect) o.classList.add('incorrect');
+    });
+
+    const wrongHint = quiz.id === 'q1'
+      ? '✗ 不对。再想想：Registry 是管理工具的地方，不是训练模型的地方。'
+      : '✗ 不对。Harness 的韧性来自于让模型参与错误处理，而不是直接崩溃。';
+    feedback.textContent = isCorrect ? '✓ 正确！' : wrongHint;
+    feedback.className = 'quiz-feedback ' + (isCorrect ? 'correct' : 'incorrect');
+    btn.textContent = '已提交';
+    btn.style.opacity = '0.4';
+    btn.style.cursor = 'not-allowed';
+    btn.disabled = true;
+    options.forEach(o => o.style.pointerEvents = 'none');
+  });
+});
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+</body>
+</html>

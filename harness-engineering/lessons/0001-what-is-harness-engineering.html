@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 0001 课：什么是 Harness Engineering？</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+</head>
+<body>
+
+<h1>第 0001 课：什么是 Harness Engineering？</h1>
+
+<p>
+  <strong>Harness Engineering</strong> 是 AI 时代的一个新工程范式。它描述的是<em>构建、编排和控制 AI Agent 系统的工程实践</em>——就像汽车引擎需要线束（harness）来连接各个电子部件一样，AI Agent 需要一套"软件线束"来连接模型、工具、内存和用户。
+</p>
+
+<div class="insight">
+  你每天都在使用一个 Harness。Claude Code 本身就是一个 Harness——它在持续循环中编排模型调用、工具执行、文件读写和用户交互。问题不是"什么是 Harness？"而是"我怎么自己造一个？"
+</div>
+
+<h2>核心概念：Agentic Loop</h2>
+
+<p>每一个 Harness 的核心都是同一个模式——<strong>Agentic Loop</strong>（代理循环）：</p>
+
+<div class="diagram">
+  <svg width="580" height="280" viewBox="0 0 580 280">
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+        <path d="M0,0 L8,3 L0,6 Z" fill="#c44"/>
+      </marker>
+    </defs>
+    <rect x="190" y="30" width="200" height="50" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="290" y="60" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="14" font-weight="700" fill="#111">用户 / 系统输入</text>
+
+    <rect x="190" y="120" width="200" height="50" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="290" y="145" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="14" font-weight="700" fill="#111">模型调用 (LLM)</text>
+    <text x="290" y="160" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="11" fill="#555">推理 + 决策</text>
+
+    <rect x="190" y="210" width="200" height="50" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="290" y="235" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="14" font-weight="700" fill="#111">工具执行</text>
+    <text x="290" y="250" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="11" fill="#555">读 / 写 / 搜索 / 计算</text>
+
+    <line x1="290" y1="80" x2="290" y2="118" stroke="#c44" stroke-width="2" marker-end="url(#arrow)"/>
+    <line x1="290" y1="170" x2="290" y2="208" stroke="#c44" stroke-width="2" marker-end="url(#arrow)"/>
+    <path d="M 390 235 Q 470 235 470 170 Q 470 50 390 55" fill="none" stroke="#c44" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6,3"/>
+    <text x="485" y="145" font-family="Helvetica Neue,Arial,sans-serif" font-size="11" fill="#c44">循环直到结束</text>
+
+    <text x="290" y="25" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="11" fill="#555">← 你在这里（前端 / Human-in-the-loop）</text>
+  </svg>
+</div>
+
+<p>这个循环的三个阶段：</p>
+
+<ol>
+  <li><strong>输入 → 模型</strong>：用户输入 + 系统 prompt + 工具定义 → 发送给 LLM</li>
+  <li><strong>模型 → 决策</strong>：模型决定是返回文本还是调用工具</li>
+  <li><strong>工具 → 回到模型</strong>：执行工具，结果返回给模型，直到模型决定停止</li>
+</ol>
+
+<h2>最小可运行 Harness</h2>
+
+<p>下面是一个 <strong>30 行 TypeScript</strong> 的最小 Agentic Loop（用 OpenAI SDK 连接 DeepSeek——DeepSeek 提供 OpenAI 兼容接口，只需改 <code>baseURL</code>）：</p>
+
+<pre><code class="language-typescript">import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  baseURL: "https://api.deepseek.com",   // ← 关键：指向 DeepSeek
+});
+const MODEL = "deepseek-chat";
+
+async function run(prompt: string) {
+  const messages: any[] = [{ role: "user", content: prompt }];
+
+  while (true) {
+    const res = await client.chat.completions.create({
+      model: MODEL,
+      messages,
+      tools: [{
+        type: "function",
+        function: {
+          name: "get_weather",
+          description: "获取指定城市的天气",
+          parameters: {
+            type: "object",
+            properties: { city: { type: "string" } },
+            required: ["city"]
+          }
+        }
+      }]
+    });
+
+    const msg = res.choices[0].message;
+    messages.push(msg);
+
+    // 模型没有要调用工具 → 结束循环，返回文本
+    if (!msg.tool_calls) {
+      return msg.content;
+    }
+
+    // 模型要调用工具 → 执行，把结果作为 role:"tool" 消息塞回历史，继续循环
+    for (const call of msg.tool_calls) {
+      const args = JSON.parse(call.function.arguments);
+      const result = await executeTool(call.function.name, args);
+      messages.push({
+        role: "tool",
+        tool_call_id: call.id,
+        content: result
+      });
+    }
+    // ← 循环回到 while(true)，模型拿到结果后继续推理
+  }
+}</code></pre>
+
+<p>这 30 行代码就是 <strong>Harness 的最简形式</strong>。真实的 Harness（如 Claude Code）只是在这个核心循环上加了更多层：</p>
+
+<ul>
+  <li><strong>工具注册与发现</strong>——怎么声明有哪些工具可用</li>
+  <li><strong>状态管理</strong>——对话历史、文件系统、内存</li>
+  <li><strong>错误恢复</strong>——工具调用失败时怎么办</li>
+  <li><strong>多 Agent 编排</strong>——一个 Agent 调用另一个 Agent</li>
+  <li><strong>人机交互</strong>——权限确认、中途干预</li>
+</ul>
+
+<h2>Harness 的三个层次</h2>
+
+<div class="diagram">
+  <svg width="500" height="200" viewBox="0 0 500 200">
+    <rect x="20" y="20" width="460" height="50" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="250" y="42" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="14" font-weight="700" fill="#111">Level 1：单 Agent 循环</text>
+    <text x="250" y="58" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="11" fill="#555">模型 + 工具 + 循环。如上 30 行代码。</text>
+
+    <rect x="20" y="80" width="460" height="50" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="250" y="102" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="14" font-weight="700" fill="#111">Level 2：多 Agent 系统</text>
+    <text x="250" y="118" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="11" fill="#555">多个 Agent 协作，每个有独立的工具和上下文。</text>
+
+    <rect x="20" y="140" width="460" height="50" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="250" y="162" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="14" font-weight="700" fill="#111">Level 3：生产级 Harness</text>
+    <text x="250" y="178" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="11" fill="#555">监控、评估、安全、持久化、人机协作、UI 层。</text>
+  </svg>
+</div>
+
+<p>这个课程将带你从 <strong>Level 1 → Level 3</strong>，每一步都产出可运行的代码。</p>
+
+<h2>小测验</h2>
+
+<div class="quiz" id="q1">
+  <h3>第 1 题</h3>
+  <p>Agentic Loop 的核心决策点是什么？</p>
+  <div class="quiz-options">
+    <div class="quiz-option" data-value="a">模型是否生成了超过 1000 个 token</div>
+    <div class="quiz-option" data-value="b">模型返回的是文本还是工具调用</div>
+    <div class="quiz-option" data-value="c">用户的输入是否包含特殊字符</div>
+    <div class="quiz-option" data-value="d">网络连接是否仍然存活</div>
+  </div>
+  <div class="quiz-feedback"></div>
+  <button class="quiz-btn" style="opacity:0.5; cursor:default;">先选答案，再点这里</button>
+</div>
+
+<div class="quiz" id="q2">
+  <h3>第 2 题</h3>
+  <p>以下哪个不是 Harness 的核心职责？</p>
+  <div class="quiz-options">
+    <div class="quiz-option" data-value="a">管理模型调用和工具执行的循环</div>
+    <div class="quiz-option" data-value="b">训练和微调底层大语言模型</div>
+    <div class="quiz-option" data-value="c">处理工具调用失败和错误恢复</div>
+    <div class="quiz-option" data-value="d">在多 Agent 之间传递上下文和状态</div>
+  </div>
+  <div class="quiz-feedback"></div>
+  <button class="quiz-btn" style="opacity:0.5; cursor:default;">先选答案，再点这里</button>
+</div>
+
+<h2>接下来</h2>
+
+<p>下一课我们将深入 <strong>Level 1</strong>：手写一个完整的单 Agent Loop，包括工具注册、错误处理、和流式输出。</p>
+
+<footer>
+  <nav>
+    <span></span>
+    <a href="0002-single-agent-loop.html">下一课：构建单 Agent 循环 →</a>
+  </nav>
+  <p style="margin-top: 1rem;">
+    <strong>推荐阅读：</strong>
+    <a href="https://www.anthropic.com/engineering/building-effective-agents" target="_blank">Building Effective Agents — Anthropic 工程博客</a>
+  </p>
+  <p style="margin-top: 0.5rem;">
+    💬 <em>有问题？向你的 AI 老师提问——我随时为你解答不清楚的地方。</em>
+  </p>
+</footer>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  const btn = quiz.querySelector('.quiz-btn');
+  let selected = null;
+  let submitted = false;
+
+  options.forEach(opt => {
+    opt.addEventListener('click', () => {
+      if (submitted) return;
+      options.forEach(o => o.classList.remove('selected'));
+      opt.classList.add('selected');
+      selected = opt.dataset.value;
+      btn.textContent = '选好了，检查答案';
+      btn.style.opacity = '1';
+      btn.style.cursor = 'pointer';
+    });
+  });
+
+  btn.addEventListener('click', () => {
+    if (!selected) return;
+    submitted = true;
+    const correct = quiz.id === 'q1' ? 'b' : 'b';
+    const isCorrect = selected === correct;
+
+    options.forEach(o => {
+      if (o.dataset.value === correct) o.classList.add('correct');
+      if (o.dataset.value === selected && !isCorrect) o.classList.add('incorrect');
+    });
+
+    const wrongHint = quiz.id === 'q1'
+      ? '✗ 不对。再想想：Agentic Loop 中模型返回什么时循环会继续？'
+      : '✗ 不对。再想想：Harness 负责编排调用，但它不负责训练模型本身。';
+    feedback.textContent = isCorrect ? '✓ 正确！' : wrongHint;
+    feedback.className = 'quiz-feedback ' + (isCorrect ? 'correct' : 'incorrect');
+    btn.textContent = '已提交';
+    btn.style.opacity = '0.4';
+    btn.style.cursor = 'not-allowed';
+    btn.disabled = true;
+    options.forEach(o => o.style.pointerEvents = 'none');
+  });
+});
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+</body>
+</html>

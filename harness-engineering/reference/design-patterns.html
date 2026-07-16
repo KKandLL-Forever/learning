@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>速查：本项目中的设计模式与范式</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+</head>
+<body>
+
+<h1>速查：本项目中的设计模式与范式</h1>
+
+<p>
+  本项目的代码不是随手堆出来的——它刻意用了一批经典的设计模式和编程范式。这一页把每一个都单独拎出来讲清楚：<strong>它是什么、代码里在哪、为什么这么写、不这么写会怎样</strong>。看懂这些，你就能把同样的套路搬到自己的 Harness 里。
+</p>
+
+<p style="color: var(--text-secondary); font-size: 0.9em;">
+  第 1～8 条来自<a href="../lessons/0002-single-agent-loop.html">第 0002 课（单 Agent 循环）</a>；第 9～11 条来自<a href="../lessons/0003-multi-agent-system.html">第 0003 课（多 Agent 系统）</a>。
+</p>
+
+<div class="insight">
+  设计模式不是"炫技"。每一个模式都在解决一个具体的"如果以后要改，怎么才能只改一处"的问题。学模式的正确姿势是记住它解决的<em>痛点</em>，而不是背它的 UML 图。
+</div>
+
+<h2>全景图：三个边界背后的模式</h2>
+
+<div class="diagram">
+  <svg width="560" height="220" viewBox="0 0 560 220">
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+        <path d="M0,0 L8,3 L0,6 Z" fill="#c44"/>
+      </marker>
+    </defs>
+    <rect x="20" y="80" width="140" height="60" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="90" y="105" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">ModelAdapter</text>
+    <text x="90" y="123" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="10" fill="#555">适配器 + 策略</text>
+
+    <rect x="210" y="80" width="140" height="60" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="280" y="105" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">Agent Loop</text>
+    <text x="280" y="123" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="10" fill="#555">依赖注入 + 迭代器</text>
+
+    <rect x="400" y="80" width="140" height="60" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="470" y="105" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">ToolRegistry</text>
+    <text x="470" y="123" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="10" fill="#555">注册表 + 链式调用</text>
+
+    <line x1="160" y1="110" x2="208" y2="110" stroke="#c44" stroke-width="2" marker-end="url(#arrow)"/>
+    <line x1="350" y1="110" x2="398" y2="110" stroke="#c44" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <text x="280" y="45" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="11" fill="#555">贯穿全场：面向接口编程 + 标签联合类型 + 错误隔离</text>
+  </svg>
+</div>
+
+<h2>1. 适配器模式（Adapter）</h2>
+
+<p><strong>在哪：</strong><code>model.ts</code> —— <code>ModelAdapter</code> 接口，加上 <code>MockModel</code> 和 <code>DeepSeekModel</code> 两个实现。</p>
+
+<p><strong>解决什么：</strong>不同 LLM 厂商的 API 长得不一样（DeepSeek/OpenAI 的 SSE、本地模型的裸输出……）。适配器把这些"外部形状各异"的接口，统一"翻译"成 Agent Loop 认识的一种形状：<code>stream(messages, tools) → AsyncIterable&lt;ModelResponseChunk&gt;</code>。</p>
+
+<pre><code class="language-typescript">export interface ModelAdapter {
+  stream(messages: Message[], tools: ToolDefinition[]): AsyncIterable&lt;ModelResponseChunk&gt;;
+}
+
+// 适配器 A：假的，不需要 API Key，用于教学 / 测试
+export class MockModel implements ModelAdapter { /* ... */ }
+
+// 适配器 B：真的 DeepSeek API（OpenAI 兼容），把它的流式分片翻译成统一的 chunk
+export class DeepSeekModel implements ModelAdapter {
+  async *stream(messages, tools) {
+    const stream = await this.client.chat.completions.create({ stream: true, /* ... */ });
+    for await (const part of stream) {
+      const delta = part.choices[0]?.delta;
+      if (delta?.content) {
+        yield { type: "text", text: delta.content };   // ← 翻译动作
+      }
+      // ... 工具调用分片按 index 累积后再 yield tool_use
+    }
+  }
+}</code></pre>
+
+<div class="insight">
+  识别适配器的方法：看到"一个接口 + 多个 <code>implements</code>，每个实现把某种外部 API 包一层"，那就是适配器。它的价值是<strong>让核心逻辑对『用哪家模型』一无所知</strong>。
+</div>
+
+<h2>2. 策略模式（Strategy）</h2>
+
+<p><strong>在哪：</strong><code>main.ts</code> —— 把哪一个 <code>ModelAdapter</code> 传进 <code>Agent</code>，就是在"选择策略"。</p>
+
+<p><strong>与适配器的区别：</strong>适配器关注"<em>怎么把外部接口包成统一形状</em>"，策略关注"<em>运行时选哪一个实现</em>"。同一份代码，两种视角。换模型只需要改一行注入：</p>
+
+<pre><code class="language-typescript">// 学习阶段用 Mock，一行都不用改 Agent
+const agent = new Agent({ model: new MockModel() }, tools);
+
+// 想调真 DeepSeek？只换这一行策略：
+const agent = new Agent({ model: new DeepSeekModel(process.env.DEEPSEEK_API_KEY!) }, tools);</code></pre>
+
+<p>Agent 内部完全不知道自己拿到的是 Mock 还是真模型——它只调 <code>this.config.model.stream(...)</code>。这就是<strong>面向接口编程</strong>（program to an interface, not an implementation）的直接收益。</p>
+
+<h2>3. 注册表模式（Registry）</h2>
+
+<p><strong>在哪：</strong><code>tools.ts</code> —— <code>ToolRegistry</code> 用一个 <code>Map</code> 管理所有工具。</p>
+
+<p><strong>解决什么：</strong>工具是"可插拔"的。你不希望 Agent Loop 里写死 <code>if (name === "get_weather")</code>。注册表提供三个动作：<em>注册</em>、<em>按名字查</em>、<em>执行</em>，让工具集合可以随时增删而不动核心循环。</p>
+
+<pre><code class="language-typescript">export class ToolRegistry {
+  private tools = new Map&lt;string, Tool&gt;();
+
+  register(tool: Tool): this { /* 注册 */ }
+  getAllDefinitions(): ToolDefinition[] { /* 给模型看的清单 */ }
+  async execute(name: string, input): Promise&lt;string&gt; { /* 按名字执行 */ }
+}</code></pre>
+
+<h2>4. 链式调用 / 流式接口（Fluent Interface）</h2>
+
+<p><strong>在哪：</strong><code>ToolRegistry.register</code> 的返回值是 <code>this</code>。</p>
+
+<p><strong>细节：</strong>方法结尾 <code>return this</code>，就能把多次调用串成一条链，读起来像在"声明"而不是"一步步操作"：</p>
+
+<pre><code class="language-typescript">register(tool: Tool): this {
+  this.tools.set(tool.definition.name, tool);
+  return this;                 // ← 关键：返回自身，才能链下去
+}
+
+// main.ts 里的效果：
+const tools = new ToolRegistry()
+  .register(getWeatherTool)
+  .register(calcTool);</code></pre>
+
+<h2>5. 依赖注入 / 控制反转（DI / IoC）</h2>
+
+<p><strong>在哪：</strong><code>agent.ts</code> 的构造函数。</p>
+
+<p><strong>解决什么：</strong><code>Agent</code> 自己<strong>不 new 任何依赖</strong>——model 和 tools 都是从外面"注入"进来的。谁来组装？<code>main.ts</code>（组合根 composition root）。好处：测试时可以塞一个假 model，生产时塞真 model，Agent 一个字都不用改。</p>
+
+<pre><code class="language-typescript">export class Agent {
+  constructor(
+    private config: AgentConfig,   // 里面装着 model 这个依赖
+    private tools: ToolRegistry,    // 工具依赖也从外面来
+  ) {}
+}</code></pre>
+
+<div class="insight">
+  控制反转的"反转"指的是：<strong>创建依赖的控制权，从对象自己手里，反转到了外部调用者手里</strong>。这就是为什么第 2、3、5 条能配合得这么顺——正因为依赖是注入的，你才能自由地"选策略"。
+</div>
+
+<h2>6. 迭代器 / 异步生成器（Iterator via async generator）</h2>
+
+<p><strong>在哪：</strong><code>async *stream(...)</code> 和 <code>async *run(...)</code> 里的 <code>yield</code>。</p>
+
+<p><strong>解决什么：</strong>流式输出要求"边生成边吐"，而不是"全部算完再一次性返回"。异步生成器（<code>async *</code> + <code>yield</code>）让你用最朴素的 <code>for await ... of</code> 就能一块一块地消费，既做到了流式，又保留了普通函数的可读性。</p>
+
+<pre><code class="language-typescript">async *run(userInput: string) {
+  for (let turn = 0; turn &lt; maxTurns; turn++) {
+    for await (const chunk of this.config.model.stream(messages, defs)) {
+      yield chunk;              // ← 每来一块就吐给上层，不用等整轮结束
+    }
+  }
+  yield { type: "done", result };
+}
+
+// main.ts 消费端，天然的流式：
+for await (const chunk of agent.run(userInput)) {
+  if (chunk.type === "text") process.stdout.write(chunk.text ?? "");
+}</code></pre>
+
+<h2>7. 标签联合类型（Tagged / Discriminated Union）</h2>
+
+<p><strong>在哪：</strong><code>types.ts</code> 的 <code>ModelResponseChunk</code>（靠 <code>type</code> 字段区分）和 <code>ContentBlock</code>。</p>
+
+<p><strong>解决什么：</strong>循环里流动的数据有好几种形态——文本、工具调用、结束信号。用一个带 <code>type</code> 标签的联合类型，TypeScript 就能在 <code>if (chunk.type === "tool_use")</code> 之后<strong>自动收窄类型</strong>，让你安全地访问 <code>chunk.toolUse</code>。这是把"运行时的分支判断"和"编译期的类型安全"绑在一起的经典手法。</p>
+
+<pre><code class="language-typescript">export type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_result"; tool_use_id: string; content: string };
+//        ↑ 共同的 "type" 字段就是"标签"，用来区分是哪一种</code></pre>
+
+<h2>8. 错误隔离 / 优雅降级（Error Isolation）</h2>
+
+<p><strong>在哪：</strong><code>ToolRegistry.execute</code> 里的 <code>try/catch</code>。</p>
+
+<p><strong>解决什么：</strong>工具执行失败时，<strong>不要抛异常终止整个循环</strong>，而是把错误信息当成 <code>tool_result</code> 返回给模型，让模型自己决定重试还是向用户解释。这是 Harness 韧性（resilience）的核心设计——把"失败"变成"模型能读懂的一条普通结果"。</p>
+
+<pre><code class="language-typescript">async execute(name: string, input): Promise&lt;string&gt; {
+  try {
+    return await tool.execute(input);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `工具执行失败：${message}`;   // ← 把异常"降级"成一条结果，循环继续
+  }
+}</code></pre>
+
+<hr style="border:none; border-top:1px solid var(--border); margin:2.5rem 0 1.5rem;">
+<p style="color: var(--text-secondary); font-size: 0.9em;">以下三条来自第 0003 课的多 Agent 系统。</p>
+
+<h2>9. 中介者模式（Mediator）</h2>
+
+<p><strong>在哪：</strong><code>orchestrator.ts</code> —— <code>Orchestrator</code>。</p>
+
+<p><strong>解决什么：</strong>多个 Worker 之间<strong>不直接互相调用</strong>，所有沟通都经过 Orchestrator 转发。这样每个 Worker 只需要认识"编排者"一个对象，而不需要知道其他 Worker 的存在。如果让 Worker 彼此直接引用，N 个 Worker 就会织成一张 N×N 的关系网，加一个删一个都牵一发动全身；有了中介者，关系网被压成一颗星形。</p>
+
+<pre><code class="language-typescript">async run(userTask: string) {
+  const chosen = await this.router.route(userTask, this.workers);
+  const results: AgentMessage[] = [];
+  for (const name of chosen) {
+    const worker = this.workers.find((w) =&gt; w.name === name);
+    // ← Worker 之间从不直接对话，全部经 Orchestrator 中转
+    const result = await worker!.run(userTask);
+    results.push({ from: name, to: "orchestrator", content: result });
+  }
+  return { answer: this.synthesize(results), log };
+}</code></pre>
+
+<div class="insight">
+  识别中介者：看到"一堆对象都只跟<strong>中间那一个</strong>说话，彼此之间不直接引用"，那就是中介者。它把"多对多"的耦合收敛成"多对一"。
+</div>
+
+<h2>10. 工厂函数（Factory Function）</h2>
+
+<p><strong>在哪：</strong><code>worker.ts</code> —— <code>makeWorker(opts)</code>。</p>
+
+<p><strong>解决什么：</strong>创建一个 Worker 要经过好几步——new 一个 Agent、塞进 model 和 system prompt、把它的流式 <code>run</code> 收敛成一个 Promise。工厂函数把这套装配<strong>藏在一个函数背后</strong>，调用方只管传"我想要什么"（配置），拿回一个现成的 <code>Worker</code>，不必关心里面怎么拼的。</p>
+
+<pre><code class="language-typescript">// 调用方极其干净——不用 new Agent、不用管流式细节
+const weatherWorker = makeWorker({
+  name: "weather",
+  description: "回答天气相关问题",
+  systemPrompt: "你是天气助手，只回答天气问题。",
+  model: new ScriptedModel("北京今天晴，25°C，湿度 45%。"),
+});</code></pre>
+
+<p>它和第 5 条"依赖注入"是搭档：工厂负责<em>组装</em>，注入负责把<em>依赖</em>（model、tools）从外面递进来。</p>
+
+<h2>11. 外观模式（Facade）</h2>
+
+<p><strong>在哪：</strong><code>worker.ts</code> 里 <code>Worker.run</code> 的实现。</p>
+
+<p><strong>解决什么：</strong>第 0002 课的 <code>Agent.run</code> 是个<strong>异步生成器</strong>——要用 <code>for await</code> 一块块消费、还要自己判断 <code>chunk.type === "done"</code>。但 Orchestrator 并不关心这些流式细节，它只想要"给个任务、还我一个字符串"。外观模式就是<strong>用一个简单接口，罩住背后那套复杂调用</strong>。</p>
+
+<pre><code class="language-typescript">async run(task: string): Promise&lt;string&gt; {   // ← 对外只是"任务进，字符串出"
+  let final = "";
+  for await (const chunk of agent.run(task)) {   // ← 复杂的流式循环被藏在里面
+    if (chunk.type === "done" &amp;&amp; chunk.result) final = chunk.result.response;
+  }
+  return final;
+}</code></pre>
+
+<div class="insight">
+  外观 vs 适配器：两者都"包一层"，但目的不同。<strong>适配器</strong>是为了<em>兼容</em>（把 A 形状转成 B 形状）；<strong>外观</strong>是为了<em>简化</em>（把复杂的多步调用收成一个易用入口）。这里 <code>Worker.run</code> 把"流式生成器"简化成"一个 Promise"，是典型的外观。
+</div>
+
+<div class="insight">
+  把 9～11 连起来看，就是<strong>编排者–工作者（Orchestrator-Workers）</strong>这个智能体协作架构的三块拼图：中介者定义"谁跟谁说话"，工厂负责"批量造出工作者"，外观让"工作者用起来足够简单"。
+</div>
+
+<h2>一张表记住它们</h2>
+
+<table style="width:100%; border-collapse: collapse; margin: 1rem 0;">
+  <thead>
+    <tr style="border-bottom: 2px solid var(--border);">
+      <th style="text-align:left; padding:0.5rem;">模式 / 范式</th>
+      <th style="text-align:left; padding:0.5rem;">代码位置</th>
+      <th style="text-align:left; padding:0.5rem;">解决的痛点</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;">适配器</td>
+      <td style="padding:0.5rem;"><code>model.ts</code></td>
+      <td style="padding:0.5rem;">不同厂商 API 形状不一，统一成一种</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;">策略</td>
+      <td style="padding:0.5rem;"><code>main.ts</code> 注入</td>
+      <td style="padding:0.5rem;">运行时换模型，核心不改</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;">注册表</td>
+      <td style="padding:0.5rem;"><code>tools.ts</code></td>
+      <td style="padding:0.5rem;">工具可插拔，不写死 if 分支</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;">链式调用</td>
+      <td style="padding:0.5rem;"><code>register(): this</code></td>
+      <td style="padding:0.5rem;">声明式地组装工具集</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;">依赖注入 / IoC</td>
+      <td style="padding:0.5rem;"><code>agent.ts</code> 构造函数</td>
+      <td style="padding:0.5rem;">依赖从外面来，可测试、可替换</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;">迭代器 / 异步生成器</td>
+      <td style="padding:0.5rem;"><code>async *</code> + <code>yield</code></td>
+      <td style="padding:0.5rem;">流式输出，又保持可读</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;">标签联合类型</td>
+      <td style="padding:0.5rem;"><code>types.ts</code></td>
+      <td style="padding:0.5rem;">分支判断 + 编译期类型安全</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;">错误隔离</td>
+      <td style="padding:0.5rem;"><code>ToolRegistry.execute</code></td>
+      <td style="padding:0.5rem;">工具失败不中断循环，交给模型处理</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;">中介者</td>
+      <td style="padding:0.5rem;"><code>orchestrator.ts</code></td>
+      <td style="padding:0.5rem;">Worker 只跟编排者说话，把多对多耦合收成星形</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;">工厂函数</td>
+      <td style="padding:0.5rem;"><code>makeWorker()</code></td>
+      <td style="padding:0.5rem;">把 Worker 的装配藏在函数背后，调用方只传配置</td>
+    </tr>
+    <tr style="border-bottom: 1px solid var(--border);">
+      <td style="padding:0.5rem;">外观</td>
+      <td style="padding:0.5rem;"><code>Worker.run</code></td>
+      <td style="padding:0.5rem;">用"任务进、字符串出"罩住背后的流式循环</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="insight">
+  一个彩蛋：这些模式能配合得这么顺，根源都是同一条原则——<strong>面向接口编程，而非面向实现</strong>。<code>ModelAdapter</code> 和 <code>Tool</code> 两个接口是整套设计的"缝合线"，正因为核心循环只依赖接口，适配器、策略、注册表、依赖注入才能各就各位。
+</div>
+
+<footer>
+  <p>
+    📖 <a href="../lessons/0002-single-agent-loop.html">第 0002 课</a>
+    &nbsp;·&nbsp;
+    <a href="../lessons/0003-multi-agent-system.html">第 0003 课</a>
+    &nbsp;·&nbsp;
+    <a href="agentic-loop-pattern.html">速查：Agentic Loop 模式</a>
+  </p>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+</body>
+</html>

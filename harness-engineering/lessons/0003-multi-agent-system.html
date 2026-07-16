@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>第 0003 课：多 Agent 系统</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+</head>
+<body>
+
+<h1>第 0003 课：多 Agent 系统</h1>
+
+<p>
+  前两课我们打磨了<strong>一个</strong> Agent 循环。这一课进入 <strong>Level 2</strong>：把一个 Agent 拆成多个，各自专精，由一个"编排者"统一调度。这就是生产级 Harness（如 Claude Code 的 subagent、各类 Agent 框架）的骨架。
+</p>
+
+<div class="insight">
+  多 Agent 不是"多个模型堆在一起"。它真正解决三件事：<strong>上下文隔离</strong>（每个 Agent 只看自己该看的）、<strong>专精分工</strong>（不同 system prompt / 工具集）、<strong>可并行</strong>（互相独立的子任务同时跑）。
+</div>
+
+<h2>为什么需要多 Agent？</h2>
+
+<p>当你把所有能力塞进一个 Agent，会遇到三堵墙：</p>
+
+<ul>
+  <li><strong>上下文膨胀</strong>——工具越多、历史越长，模型越容易"分心"、越贵、越慢。</li>
+  <li><strong>职责混乱</strong>——一个 system prompt 想同时当天气专家、数学家、文字编辑，哪个都做不精。</li>
+  <li><strong>无法并行</strong>——单循环只能一步步来，独立子任务白白排队等待。</li>
+</ul>
+
+<p>把它们拆成多个专精 Worker，再加一个 Orchestrator 统一调度，三堵墙就都拆掉了。</p>
+
+<h2>核心架构：Orchestrator–Workers</h2>
+
+<div class="diagram">
+  <svg width="540" height="260" viewBox="0 0 540 260">
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+        <path d="M0,0 L8,3 L0,6 Z" fill="#c44"/>
+      </marker>
+    </defs>
+    <rect x="200" y="15" width="140" height="40" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="270" y="40" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13" font-weight="700" fill="#111">用户任务</text>
+
+    <rect x="180" y="100" width="180" height="50" rx="8" fill="#fff" stroke="#c44" stroke-width="2.5"/>
+    <text x="270" y="122" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="14" font-weight="700" fill="#111">Orchestrator</text>
+    <text x="270" y="139" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="10" fill="#555">路由 · 分发 · 收集 · 汇总</text>
+
+    <rect x="30" y="205" width="130" height="45" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="95" y="232" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="12" font-weight="700" fill="#111">weather Worker</text>
+
+    <rect x="205" y="205" width="130" height="45" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="270" y="232" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="12" font-weight="700" fill="#111">math Worker</text>
+
+    <rect x="380" y="205" width="130" height="45" rx="8" fill="#fff" stroke="#c44" stroke-width="2"/>
+    <text x="445" y="232" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="12" font-weight="700" fill="#111">writer Worker</text>
+
+    <line x1="270" y1="55" x2="270" y2="98" stroke="#c44" stroke-width="2" marker-end="url(#arrow)"/>
+    <line x1="230" y1="150" x2="110" y2="203" stroke="#c44" stroke-width="2" marker-end="url(#arrow)"/>
+    <line x1="270" y1="150" x2="270" y2="203" stroke="#c44" stroke-width="2" marker-end="url(#arrow)"/>
+    <line x1="310" y1="150" x2="430" y2="203" stroke="#c44" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <text x="270" y="85" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="10" fill="#555">每个 Worker = 一个独立的 Agent（独立上下文）</text>
+  </svg>
+</div>
+
+<p>整个系统就四步：<strong>路由 → 分发 → 收集 → 汇总</strong>。我们把每一步都拆成一个小模块，逐个实现。</p>
+
+<h2>第一步：消息传递协议</h2>
+
+<p>多个 Agent 之间靠"消息"沟通。先定义最小的消息结构——谁发给谁、内容是什么。有了统一的 <code>AgentMessage</code>，整条协作链路就能被记录、回放、调试。</p>
+
+<pre><code class="language-typescript">// src/0003-multi-agent/types.ts
+export interface AgentMessage {
+  from: string;
+  to: string;
+  content: string;
+}
+
+// Worker：能接收任务、返回结果的子 Agent
+export interface Worker {
+  name: string;
+  description: string; // 给 Orchestrator 看，用于路由决策
+  run(task: string): Promise&lt;string&gt;;
+}
+
+// Router：决定把任务交给哪些 Worker
+export interface Router {
+  route(task: string, workers: Worker[]): Promise&lt;string[]&gt;;
+}</code></pre>
+
+<h2>第二步：把 Agent 包成 Worker（上下文隔离）</h2>
+
+<p>关键设计：<strong>每个 Worker 内部持有一个独立的第 0002 课 <code>Agent</code> 实例</strong>。独立的 Agent 意味着独立的 <code>messages</code> 历史——这就是"上下文隔离"，一个 Worker 的对话永远不会污染另一个。</p>
+
+<pre><code class="language-typescript">// src/0003-multi-agent/worker.ts
+export function makeWorker(opts: {
+  name: string;
+  description: string;
+  model: ModelAdapter;
+  systemPrompt: string;
+  tools?: ToolRegistry;
+}): Worker {
+  // ← 直接复用第 0002 课的 Agent，一行没改
+  const agent = new Agent(
+    { model: opts.model, systemPrompt: opts.systemPrompt },
+    opts.tools ?? new ToolRegistry(),
+  );
+
+  return {
+    name: opts.name,
+    description: opts.description,
+    async run(task: string): Promise&lt;string&gt; {
+      let final = "";
+      for await (const chunk of agent.run(task)) {
+        if (chunk.type === "done" &amp;&amp; chunk.result) final = chunk.result.response;
+      }
+      return final;
+    },
+  };
+}</code></pre>
+
+<div class="insight">
+  注意这里 <strong>0002 课的 Agent 一个字都没改</strong>就被复用了。这正是前两课"三个边界"设计的回报——因为 Agent 只依赖 <code>ModelAdapter</code> 接口，它天然可以被嵌进更大的系统。
+</div>
+
+<h2>第三步：路由器（决定交给谁）</h2>
+
+<p>Orchestrator 怎么知道该把任务给哪个 Worker？这就是 <code>Router</code> 的活。最容易理解的是<strong>关键词路由</strong>——规则驱动、离线可用：</p>
+
+<pre><code class="language-typescript">// src/0003-multi-agent/router.ts
+export class KeywordRouter implements Router {
+  constructor(private rules: { keywords: string[]; worker: string }[]) {}
+
+  async route(task: string, workers: Worker[]): Promise&lt;string[]&gt; {
+    const chosen = new Set&lt;string&gt;();
+    for (const rule of this.rules) {
+      if (rule.keywords.some((k) =&gt; task.includes(k))) chosen.add(rule.worker);
+    }
+    // 兜底：没命中就交给第一个 Worker
+    if (chosen.size === 0 &amp;&amp; workers.length &gt; 0) chosen.add(workers[0].name);
+    return [...chosen];
+  }
+}</code></pre>
+
+<p>生产环境里通常换成<strong>模型路由</strong>（ModelRouter）：把每个 Worker 的 <code>description</code> 拼进 prompt，让 LLM 自己判断该调用哪个 Worker。接口 <code>Router</code> 不变，换实现即可——又是<a href="../reference/design-patterns.html">策略模式</a>。</p>
+
+<h2>第四步：编排者（路由 · 分发 · 收集 · 汇总）</h2>
+
+<pre><code class="language-typescript">// src/0003-multi-agent/orchestrator.ts
+export class Orchestrator {
+  constructor(private workers: Worker[], private router: Router) {}
+
+  async run(userTask: string) {
+    const log: AgentMessage[] = [];
+    log.push({ from: "user", to: "orchestrator", content: userTask });
+
+    // 1. 路由
+    const chosen = await this.router.route(userTask, this.workers);
+
+    // 2. 分发 + 收集（顺序执行；独立任务可用 Promise.all 并行）
+    const results: AgentMessage[] = [];
+    for (const name of chosen) {
+      const worker = this.workers.find((w) =&gt; w.name === name);
+      if (!worker) continue;
+      log.push({ from: "orchestrator", to: name, content: userTask });
+      const result = await worker.run(userTask);
+      const msg = { from: name, to: "orchestrator", content: result };
+      results.push(msg); log.push(msg);
+    }
+
+    // 3. 汇总
+    const answer = this.synthesize(results);
+    log.push({ from: "orchestrator", to: "user", content: answer });
+    return { answer, log };
+  }
+}</code></pre>
+
+<div class="insight">
+  第 2 步的 <code>for</code> 循环是顺序执行，仅为教学清晰。真实系统里，相互独立的子任务应该用 <code>Promise.all(chosen.map(...))</code> <strong>并行</strong>跑——这是多 Agent 相比单循环的一大性能优势。
+</div>
+
+<h2>第五步：运行它</h2>
+
+<p>示例里我们用 <code>ScriptedModel</code>（返回固定回复的假模型，实现了 <code>ModelAdapter</code>），所以<strong>无需 API Key</strong>就能跑：</p>
+
+<pre><code class="language-bash">npm run lesson-0003</code></pre>
+
+<p>任务 <code>"北京今天天气怎么样？顺便算一下 2 + 3 × 4"</code> 会同时命中 <code>weather</code> 和 <code>math</code> 两个 Worker，输出：</p>
+
+<pre><code class="language-plaintext">用户任务： 北京今天天气怎么样？顺便算一下 2 + 3 × 4
+
+=== 消息流（Message Passing）===
+user → orchestrator：北京今天天气怎么样？顺便算一下 2 + 3 × 4
+orchestrator → weather：北京今天天气怎么样？顺便算一下 2 + 3 × 4
+weather → orchestrator：北京今天晴，25°C，湿度 45%。
+orchestrator → math：北京今天天气怎么样？顺便算一下 2 + 3 × 4
+math → orchestrator：2 + 3 × 4 = 14。
+orchestrator → user：【weather】北京今天晴，25°C，湿度 45%。
+【math】2 + 3 × 4 = 14。
+
+=== 最终答案 ===
+【weather】北京今天晴，25°C，湿度 45%。
+【math】2 + 3 × 4 = 14。</code></pre>
+
+<p>那条<strong>消息流</strong>就是多 Agent 系统最宝贵的可观测性——每一次路由、分发、回传都被记录下来，出问题时一眼就能定位是哪个环节。想接真实模型？把 <code>ScriptedModel</code> 换成第 0002 课的 <code>DeepSeekModel</code>（记得配 <code>.env</code> + <code>dotenv</code>）即可。</p>
+
+<h2>动手任务</h2>
+
+<ol>
+  <li>给 <code>writer</code> Worker 加一条路由规则，让"帮我总结一下……"能命中它。</li>
+  <li>把 Orchestrator 第 2 步的顺序 <code>for</code> 循环改成 <code>Promise.all</code> 并行，观察消息流顺序的变化。</li>
+  <li><strong>进阶</strong>：实现一个 <code>ModelRouter</code>（用 <code>DeepSeekModel</code> 做路由决策），替换 <code>KeywordRouter</code>，接口不变。</li>
+</ol>
+
+<h2>小测验</h2>
+
+<div class="quiz" id="q1">
+  <h3>第 1 题</h3>
+  <p>多 Agent 系统相比单 Agent 的核心优势是什么？</p>
+  <div class="quiz-options">
+    <div class="quiz-option" data-value="a">让底层模型的参数量变得更大</div>
+    <div class="quiz-option" data-value="b">上下文隔离 + 专精分工 + 可并行</div>
+    <div class="quiz-option" data-value="c">完全不再需要任何 API Key</div>
+    <div class="quiz-option" data-value="d">自动消除模型的所有幻觉</div>
+  </div>
+  <div class="quiz-feedback"></div>
+  <button class="quiz-btn" style="opacity:0.5; cursor:default;">先选答案，再点这里</button>
+</div>
+
+<div class="quiz" id="q2">
+  <h3>第 2 题</h3>
+  <p>以下哪一项<strong>不是</strong> Orchestrator 的职责？</p>
+  <div class="quiz-options">
+    <div class="quiz-option" data-value="a">路由：决定任务交给哪个 Worker</div>
+    <div class="quiz-option" data-value="b">收集各 Worker 的结果并汇总成最终答案</div>
+    <div class="quiz-option" data-value="c">亲自训练每个 Worker 使用的底层模型</div>
+    <div class="quiz-option" data-value="d">在 user 和 Worker 之间传递消息</div>
+  </div>
+  <div class="quiz-feedback"></div>
+  <button class="quiz-btn" style="opacity:0.5; cursor:default;">先选答案，再点这里</button>
+</div>
+
+<h2>下一课预告</h2>
+
+<p>第 4 课我们进入 <strong>Memory（记忆）</strong>：让 Agent 跨轮次、跨会话记住信息——从对话历史压缩，到基于文件/向量的长期记忆。</p>
+
+<footer>
+  <nav>
+    <a href="0002-single-agent-loop.html">← 上一课：构建单 Agent 循环</a>
+    <span></span>
+  </nav>
+  <p style="margin-top: 1rem;">
+    <strong>推荐阅读：</strong>
+    <a href="../reference/design-patterns.html">速查：本项目用到的设计模式与范式</a>
+    &nbsp;·&nbsp;
+    <a href="https://www.anthropic.com/engineering/building-effective-agents" target="_blank">Building Effective Agents（Orchestrator-Workers 模式）</a>
+  </p>
+  <p style="margin-top: 0.5rem;">
+    💬 <em>有问题？向你的 AI 老师提问——我随时为你解答不清楚的地方。</em>
+  </p>
+</footer>
+
+<script>
+document.querySelectorAll('.quiz').forEach(quiz => {
+  const options = quiz.querySelectorAll('.quiz-option');
+  const feedback = quiz.querySelector('.quiz-feedback');
+  const btn = quiz.querySelector('.quiz-btn');
+  let selected = null;
+  let submitted = false;
+
+  options.forEach(opt => {
+    opt.addEventListener('click', () => {
+      if (submitted) return;
+      options.forEach(o => o.classList.remove('selected'));
+      opt.classList.add('selected');
+      selected = opt.dataset.value;
+      btn.textContent = '选好了，检查答案';
+      btn.style.opacity = '1';
+      btn.style.cursor = 'pointer';
+    });
+  });
+
+  btn.addEventListener('click', () => {
+    if (!selected) return;
+    submitted = true;
+    const correct = quiz.id === 'q1' ? 'b' : 'c';
+    const isCorrect = selected === correct;
+
+    options.forEach(o => {
+      if (o.dataset.value === correct) o.classList.add('correct');
+      if (o.dataset.value === selected && !isCorrect) o.classList.add('incorrect');
+    });
+
+    const wrongHint = quiz.id === 'q1'
+      ? '✗ 不对。多 Agent 的价值在于工程结构：隔离上下文、各自专精、可并行——而不是改变模型本身。'
+      : '✗ 不对。Orchestrator 只负责编排（路由/分发/收集/汇总），训练模型完全不是它的职责。';
+    feedback.textContent = isCorrect ? '✓ 正确！' : wrongHint;
+    feedback.className = 'quiz-feedback ' + (isCorrect ? 'correct' : 'incorrect');
+    btn.textContent = '已提交';
+    btn.style.opacity = '0.4';
+    btn.style.cursor = 'not-allowed';
+    btn.disabled = true;
+    options.forEach(o => o.style.pointerEvents = 'none');
+  });
+});
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>hljs.highlightAll();</script>
+
+</body>
+</html>

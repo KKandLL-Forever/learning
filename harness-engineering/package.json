@@ -1,0 +1,21 @@
+{
+  "name": "harness-engineering-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI 时代 Harness Engineering 学习项目",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx",
+    "lesson-0002": "tsx src/0002-single-agent-loop/main.ts",
+    "lesson-0003": "tsx src/0003-multi-agent/main.ts"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prompt Engineering 课程 · 目录</title>
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+
+<h1>Prompt Engineering 课程</h1>
+
+<p>
+  这是与 <a href="../harness-engineering/lessons/0001-what-is-harness-engineering.html">Harness Engineering 课程</a>平行的一条学习线。注意课程名——是 <strong>Prompt <em>Engineering</em></strong>，不只是"写 prompt"。
+</p>
+
+<div class="insight">
+  <strong>写一个 prompt 是"术"，prompt engineering 是"工程"。</strong>前者关注"这句话怎么写"；后者关注"怎么<em>可复现地</em>得到好结果，并系统地持续改进"——它多出来的是<strong>评估、迭代、防御、版本管理</strong>这些让结果稳定可靠的工程环节。这门课教的是后者。
+</div>
+
+<h2>四个阶段</h2>
+
+<p>课程分四个阶段，从"把话说清楚"一路走到"把 prompt 当代码来维护"：</p>
+
+<h3>阶段一 · 基础</h3>
+<ol start="0">
+  <li>
+    <a href="lessons/0000-what-is-prompt-engineering.html">第 0000 课：什么是 Prompt Engineering</a>
+    —— 它和"写 prompt"到底差在哪；工程化的五个环节与迭代循环。
+  </li>
+  <li>
+    <a href="lessons/0001-prompt-anatomy.html">第 0001 课：Prompt 的解剖学</a>
+    —— 一个 prompt 的五个部件，以及 system / user 的分工。
+  </li>
+</ol>
+
+<h3>阶段二 · 核心技巧（把结果做对）</h3>
+<ol start="2">
+  <li style="color: var(--text-secondary);">第 0002 课：清晰与具体 —— 消除歧义的六个技巧。</li>
+  <li style="color: var(--text-secondary);">第 0003 课：少样本与示例 —— 用例子代替长篇解释。</li>
+  <li style="color: var(--text-secondary);">第 0004 课：思维链（CoT）—— 让模型"想清楚再答"。</li>
+  <li style="color: var(--text-secondary);">第 0005 课：结构化输出 —— 稳定地吐出 JSON。</li>
+</ol>
+
+<h3>阶段三 · 工程方法（把结果做<em>稳</em>）⭐ 这是 “Engineering” 的核心</h3>
+<ol start="6">
+  <li style="color: var(--text-secondary);">第 0006 课：评估 —— 建测试集、给 prompt 打分，让"好不好"可度量。</li>
+  <li style="color: var(--text-secondary);">第 0007 课：迭代循环 —— 改一处 → 跑一批 → 对比 → 保留更好的。</li>
+  <li style="color: var(--text-secondary);">第 0008 课：失败模式与防御 —— 幻觉、越权、提示注入。</li>
+  <li style="color: var(--text-secondary);">第 0009 课：模板化与版本管理 —— 把 prompt 当代码来维护。</li>
+</ol>
+
+<h3>阶段四 · 落地</h3>
+<ol start="10">
+  <li style="color: var(--text-secondary);">第 0010 课：接入 Agent —— 把这套方法用进 Harness 课程的 Agent 里。</li>
+</ol>
+
+<div class="insight">
+  很多"prompt 教程"只覆盖到<strong>阶段二</strong>就结束了——那只是"会写"。阶段三才是把它变成工程的关键：没有评估你就不知道改动是变好还是变坏，没有迭代循环你就只能碰运气，没有版本管理你就会把上周更好的那版弄丢。
+</div>
+
+<h2>这门课的约定</h2>
+
+<ul>
+  <li><strong>语言</strong>：除专业名词外全部中文。</li>
+  <li><strong>模型</strong>：示例以 DeepSeek 为准（OpenAI 兼容接口），但 prompt 原则与厂商无关。</li>
+  <li><strong>可迁移</strong>：这里学到的每个套路，都能直接用进 Harness 课程里的 Agent。</li>
+</ul>
+
+<footer>
+  <p>
+    📖 <a href="../harness-engineering/lessons/0001-what-is-harness-engineering.html">Harness Engineering 课程</a>
+    &nbsp;·&nbsp;
+    <a href="lessons/0000-what-is-prompt-engineering.html">从第 0000 课开始 →</a>
+  </p>
+  <p style="margin-top: 0.5rem;">
+    💬 <em>有问题？向你的 AI 老师提问——我随时为你解答不清楚的地方。</em>
+  </p>
+</footer>
+
+</body>
+</html>
