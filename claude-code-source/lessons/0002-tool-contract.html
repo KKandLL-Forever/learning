@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 0002 课 · 工具契约：47 个成员不是设计失误</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<p class="lesson-meta">第 0002 课 · Claude Code 源码架构</p>
+<h1>工具契约</h1>
+<p class="lesson-sub">你的 <code>Tool</code> 有 4 个成员，<code>src/Tool.ts</code> 有 47 个。这一课不用背那 47 个，要弄明白的是<strong>它们为什么必须挤在同一个接口里</strong>，还有那几行 <code>false</code> 默认值到底挡住了什么。</p>
+
+<div class="box box-do">
+  <p class="box-title">这节课结束时你会有</p>
+  <ul>
+    <li><code>mini-cc v1</code>：带 <code>buildTool()</code> 和 fail-closed 默认值，外加第一个<strong>会写</strong>的工具</li>
+    <li>一个能替代死记硬背的框架：<strong>「有几种消费者在看它？」</strong></li>
+    <li>一个反教条的判断：<strong>fail-closed 不等于「默认值都往保守写」</strong>，有一个成员它救不了你</li>
+  </ul>
+</div>
+
+<h2>先问对问题</h2>
+
+<p>你在 v0 里写的 <code>Tool</code> 是这样的：</p>
+
+<pre><code>export type Tool = {
+  name: string
+  description: string
+  inputSchema: JSONSchema
+  call(input): Promise&lt;string&gt;
+}</code></pre>
+
+<p>够用了。那 <code>src/Tool.ts</code> 凭什么膨胀到 47 个成员（其中 8 个是 <code>render*</code> 方法）？</p>
+
+<p>「因为工具功能多」是错的答案。<code>read_file</code> 的功能就是读个文件，一个 <code>call()</code> 讲完了。</p>
+
+<p>正确的问题是：<strong>同一次工具调用，有几种消费者在看它？</strong></p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:16%">谁在看</th><th style="width:40%">它需要知道什么</th><th>对应成员</th></tr></thead>
+<tbody>
+<tr><td><strong>模型</strong></td><td>参数长什么样、这工具干嘛的</td><td><code>inputSchema</code>、<code>description</code></td></tr>
+<tr><td><strong>权限系统</strong></td><td>这次调用危不危险、是不是只读、要不要问用户</td><td><code>isReadOnly</code>、<code>isDestructive</code>、<code>checkPermissions</code></td></tr>
+<tr><td><strong>调度器</strong></td><td>能不能和别的工具并行、用户插话时该不该杀掉</td><td><code>isConcurrencySafe</code>、<code>interruptBehavior</code></td></tr>
+<tr><td><strong>终端 UI</strong></td><td>调用时/执行中/成功/失败/被拒，各显示什么</td><td>8 个 <code>render*</code> 方法</td></tr>
+<tr><td><strong>安全分类器</strong></td><td>把这次调用压成一行能判断风险的文本</td><td><code>toAutoClassifierInput</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>五种消费者，每种看到的形态完全不同。把它们收进<strong>一个</strong>接口，回报是新增工具时编译器会逼你回答所有这些问题。漏掉「这个工具能并行吗」不会变成运行时的惊喜，要么当场报类型错误，要么退到一个保守的默认值。</p>
+
+<div class="box box-why">
+  <p class="box-title">顺带解释了一件 v1 里会让你意外的事</p>
+  <p>工具契约这一课改动很大，但 <code>loop.ts</code> <strong>几乎没动</strong>，只多了一步 <code>validateInput</code>。</p>
+  <p style="margin-top:0.5rem">那 47 个成员的复杂度是给<em>其它消费者</em>用的，循环本身只关心 <code>call()</code>。每个消费者各取所需，谁也不用知道别人要什么。把它们塞进同一个接口，合理之处正在这里。</p>
+</div>
+
+<h2>fail-closed：默认值的方向不是随手选的</h2>
+
+<p>47 个成员，不可能每个工具都写全。于是问题变成了另一个：<strong>作者没写时，系统该假设什么？</strong></p>
+
+<p>拿 <code>isConcurrencySafe</code> 举例。两个方向猜错的后果，严重程度差得很远。</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:14%">默认值</th><th style="width:43%">猜错了会怎样</th><th>严重程度</th></tr></thead>
+<tbody>
+<tr><td><code>true</code></td><td>工具被安排和别的工具并行执行。两个写操作打架 → 数据损坏，而且只在时序不巧时复现</td><td>难以复现的数据竞争</td></tr>
+<tr><td><code>false</code></td><td>它被串行执行</td><td>慢一点</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>这就是 <strong>fail-closed</strong>（失败时关闭）：信息缺失时，选那个「猜错了也不会出事」的方向。门禁系统断电时应该锁死而不是打开，是同一个道理。</p>
+
+<p class="src-ref">src/Tool.ts:757 · TOOL_DEFAULTS（源码原文）</p>
+<pre><code>const TOOL_DEFAULTS = {
+  isEnabled:             () =&gt; true,
+  <span class="hl">isConcurrencySafe:     () =&gt; false,   <span class="cm">// assume not safe</span></span>
+  <span class="hl">isReadOnly:            () =&gt; false,   <span class="cm">// assume writes</span></span>
+  isDestructive:         () =&gt; false,
+  checkPermissions:      () =&gt; ({ behavior: 'allow', updatedInput }),
+  toAutoClassifierInput: () =&gt; '',      <span class="cm">// 跳过分类器 —— 安全敏感工具必须覆盖</span>
+  userFacingName:        () =&gt; '',
+}</code></pre>
+
+<h3>一个真实的案例，我替你核对过了</h3>
+
+<div class="box box-real">
+  <p class="box-title">FileEditTool 根本没写这三个方法</p>
+  <p><code>src/tools/FileEditTool/FileEditTool.ts:86</code> 用了 <code>buildTool({...})</code>，但通篇<strong>没有声明</strong> <code>isConcurrencySafe</code>、<code>isReadOnly</code>、<code>isDestructive</code>。（我 grep 过整个文件，一处都没有。）</p>
+  <p style="margin-top:0.5rem">它靠 <code>TOOL_DEFAULTS</code> 兜住，被正确判定为「会写 · 须串行」。<strong>假如默认值反过来是 <code>true</code></strong>，「读 A、改 A、再读 A」就会三个一起并行，产生一个只在时序不巧时才复现的数据竞争。而这一切只因为有人少写了一行。</p>
+  <p style="margin-top:0.5rem">对照另一个极端，<code>BashTool.tsx:434</code> 把这个问题<strong>逐次转交</strong>给了 <code>isReadOnly</code>：</p>
+  <pre style="margin-top:0.5rem"><code>isConcurrencySafe(input) {
+  return this.isReadOnly?.(input) ?? false   <span class="cm">// ls 安全，rm x 不安全</span>
+}</code></pre>
+  <p style="margin-top:0.5rem">注意 <code>isConcurrencySafe</code> <strong>接收 input</strong>，同一个工具的安全性可以取决于具体调用。这是接口设计里一个容易被抄错的细节。</p>
+</div>
+
+<h3>buildTool 的展开顺序有讲究</h3>
+
+<p class="src-ref">src/Tool.ts:787</p>
+<pre><code>return {
+  ...TOOL_DEFAULTS,
+  userFacingName: () =&gt; def.name,   <span class="cm">// ← 夹在中间</span>
+  ...def,
+}</code></pre>
+
+<p>三层。<code>userFacingName</code> 夹在中间而没有放进 <code>TOOL_DEFAULTS</code>，是因为它要用到 <code>def.name</code>，同时又<strong>必须能被 <code>def</code> 自己的声明覆盖</strong>。放最后就盖不住了，放最前又拿不到 <code>name</code>。</p>
+
+<h2>但 fail-closed 有一个救不了你的成员</h2>
+
+<div class="box box-trap">
+  <p class="box-title">isDestructive 的默认 false 不是「安全方向」</p>
+  <p>前面三个默认值都能自圆其说，猜错了最多慢一点。<code>isDestructive: () =&gt; false</code> 是另一回事。</p>
+  <p style="margin-top:0.5rem">它说的是「大多数工具确实不具破坏性」，一个<em>统计意义上的常见值</em>。它并没有在保守地假设什么，所以也谈不上是<em>安全意义上的保守值</em>。</p>
+  <p style="margin-top:0.5rem">你写 <code>delete_file</code> 时忘了声明 <code>isDestructive</code>，<strong>没有任何东西会救你</strong>。源码注释把这层意思说得很直白，<em>「Only set when the tool performs irreversible operations (delete, overwrite, send).」</em>（<code>Tool.ts:405</code>），责任明确交还给了作者。</p>
+  <p style="margin-top:0.5rem"><code>toAutoClassifierInput</code> 默认返回 <code>''</code>（＝跳过安全分类器）也是同一类，注释专门写了「<strong>security-relevant tools must override</strong>」。默认值在这里表示「不参与」，不表示「按最严处理」。</p>
+  <p style="margin-top:0.5rem"><strong>能带走的一条原则：</strong>fail-closed 只在<em>后果不对称</em>时才成立。两个方向代价差不多、或者压根没法从缺省推断的时候，正确做法是把责任显式还给作者，靠注释和 code review 兜住，别假装有个安全默认值。</p>
+</div>
+
+<h2>动手：让默认值肉眼可见</h2>
+
+<p><code>v1</code> 已经建好了。它比 v0 多了 <code>buildTool.ts</code>，多了一个<strong>会写</strong>的工具 <code>write_file</code>：</p>
+
+<pre><code>cd D:\code\learning\claude-code-source\mini-cc
+bun run src/v1/main.ts "看看 src/v1 里有什么"</code></pre>
+
+<p>启动时会先打一张工具表：</p>
+
+<pre><code>工具清单：
+  read_file  <span class="hl">只读 · 可并发 · 可逆</span>　上限 ∞
+  list_dir   <span class="hl">只读 · 可并发 · 可逆</span>　上限 50000
+  write_file <span class="hl">会写 · 须串行 · 不可逆</span>　上限 50000</code></pre>
+
+<div class="box box-why">
+  <p class="box-title">盯住 write_file 那一行</p>
+  <p>打开 <code>src/v1/tools.ts</code> 看它的定义。它<strong>只声明了 <code>isDestructive: () =&gt; true</code></strong>，「会写」和「须串行」这两项是 <code>TOOL_DEFAULTS</code> 替它填的。</p>
+  <p style="margin-top:0.5rem">这正是 <code>FileEditTool</code> 在真实源码里的处境，只不过这里你能直接看见结果。</p>
+  <p style="margin-top:0.5rem">再看 <code>read_file</code> 的上限是 <strong>∞</strong>。它显式设了 <code>Infinity</code> 退出结果预算机制，否则会形成「结果太大→落盘→模型再 Read 那个文件→又太大」的循环。这套机制留到第 0005 课。</p>
+</div>
+
+<h3>两个实验</h3>
+
+<p><strong>实验 A · 把默认值改反。</strong>打开 <code>src/v1/buildTool.ts</code>，把 <code>isConcurrencySafe</code> 的默认值改成 <code>true</code>，重跑。<code>write_file</code> 那行会变成「<strong>会写 · 可并发</strong>」，一个自相矛盾又危险的组合。看完改回来。</p>
+
+<p><strong>实验 B · 试试校验。</strong>v1 的循环多了 <code>validateInput</code> 这一步。给 <code>write_file</code> 传一个缺 <code>content</code> 的调用，它返回的是<strong>一条给模型看的话</strong>，不是异常。</p>
+
+<pre><code>Error: 参数 "content" 必须是字符串。</code></pre>
+
+<p>这是上一课那条硬约束的延续，<em>校验失败也必须产出配对的 <code>tool_result</code></em>。与其说是错误处理，不如说是给模型的一次<strong>重试机会</strong>。模型看到这句话，自己补上参数再来一次。</p>
+
+<h2>检验一下</h2>
+
+<div class="quiz" id="quiz"></div>
+
+<h2>下一课的伏笔</h2>
+
+<p>你现在有了一个会写的工具，和一套能回答「谁能并发」的契约。这两样凑齐，第 0003 课才有东西可讲：</p>
+
+<pre><code>模型一次要求：Read A · Read B · Edit C · Read D · Read E
+分批结果：    [Read A, Read B]   ← 相邻且都安全 → 合并并行
+              [Edit C]           ← 不安全 → 单独一批
+              [Read D, Read E]   ← 合并，但要等 Edit C 跑完</code></pre>
+
+<p>5 个调用压成 3 批。<strong>注意第三批没有跨过 Edit C 去和第一批合并</strong>，即使它们用的是同一个工具。这个「不能跨」的限制看着保守，可少了它，<code>Edit C</code> 刚写进去的内容就可能被后面的读操作错过。</p>
+
+<h2>读一份一手资料</h2>
+
+<div class="box box-do">
+  <p class="box-title">本课推荐（20 分钟）</p>
+  <p><strong>首选 · <a href="https://www.anthropic.com/engineering/writing-tools-for-agents">Writing effective tools for AI agents</a></strong>（Anthropic 工程博客）<br>
+  这篇讲的是<strong>五种消费者里「模型」那一栏</strong>，也就是 <code>description</code> 和 <code>inputSchema</code> 该怎么写才让模型用对。它和本课正好互补，本课讲契约的<em>结构</em>，它讲契约里给模型看的那部分该写<em>什么内容</em>。</p>
+  <p style="margin-top:0.6rem"><strong>就近对照 · <a href="../../../claude-code-source/src/Tool.ts">src/Tool.ts</a></strong><br>
+  直接读 <code>:362</code> 开始的 <code>Tool</code> 类型定义和 <code>:757</code> 的 <code>TOOL_DEFAULTS</code>。<strong>重点读注释</strong>。这个文件里最有价值的东西，是每个可选成员上方那句「为什么它是可选的」。</p>
+</div>
+
+<div class="ask-teacher">
+  <strong>💬 有不清楚的地方，直接问我。</strong>比如：
+  <ul style="margin-bottom:0">
+    <li><code>BuiltTool&lt;D&gt;</code> 那个映射类型到底怎么起作用的（源码 <code>Tool.ts:735</code>，我可以拆开讲）</li>
+    <li>剩下那 30 多个成员分别归哪种消费者</li>
+    <li>想给 <code>mini-cc</code> 加个新工具练手，我陪你写</li>
+    <li>难度不合适就说一声，我调整下一课</li>
+  </ul>
+</div>
+
+<div class="footer-nav">
+  <p><strong>相关：</strong>
+    <a href="0001-minimal-kernel.html">← 第 0001 课：极简内核</a> ·
+    <a href="../reference/glossary.html">速查 · 架构术语表</a> ·
+    <a href="../index.html">课程总览</a> ·
+    <a href="../../../claude-code-source/docs/architecture-report.html">架构报告全文</a>
+  </p>
+  <p style="color:var(--text-secondary);font-size:0.88rem;margin-top:0.75rem">
+    下一课 · <strong>并发分批</strong>。只读的并发，写入的串行。为什么「读 A、改 A、再读 A」会被切成 3 批，而不是 2 批。
+  </p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+<script>
+Quiz.render('#quiz', [
+  {
+    q: '<code>src/Tool.ts</code> 的 <code>Tool</code> 接口为什么有 47 个成员？',
+    options: [
+      '工具本身的功能实在太多',
+      '有五种不同消费者在看它',
+      '为了兼容多个旧版本接口',
+    ],
+    answer: 1,
+    explain: '模型看 <code>inputSchema</code>/<code>description</code>，权限系统看 <code>isReadOnly</code>/<code>isDestructive</code>，调度器看 <code>isConcurrencySafe</code>，UI 看 8 个 <code>render*</code>，安全分类器看 <code>toAutoClassifierInput</code>。收进一个接口的回报是：新增工具时编译器会逼你回答所有这些问题，漏答变成类型错误而不是运行时惊喜。',
+  },
+  {
+    q: '<code>FileEditTool</code> 通篇没有声明 <code>isConcurrencySafe</code>，实际结果是什么？',
+    options: [
+      '在运行时抛出未实现异常',
+      '吃默认值被判定为不安全',
+      '被自动推断成与读取一样',
+    ],
+    answer: 1,
+    explain: '<code>buildTool</code> 用 <code>TOOL_DEFAULTS</code> 填上 <code>false</code>，于是它被正确判定为「须串行」。这正是 fail-closed 的价值：<strong>作者少写一行，系统仍然安全</strong>。假如默认值是 <code>true</code>，「读 A、改 A、再读 A」会三个一起并行，产生只在时序不巧时复现的数据竞争。',
+  },
+  {
+    q: '你给 <code>mini-cc</code> 加了个 <code>delete_file</code>，但忘了声明 <code>isDestructive</code>。会怎样？',
+    options: [
+      '默认可逆须作者显式声明',
+      '默认不可逆属于安全兜底',
+      '默认从工具名称自动推断',
+    ],
+    answer: 0,
+    explain: '这题是本课的关键分辨点。<code>isDestructive</code> 默认 <code>false</code> 说的是「大多数工具确实不具破坏性」，一个统计常见值，它并不指向安全的那一侧。源码注释把责任明确还给了作者，<em>Only set when the tool performs irreversible operations (delete, overwrite, send)</em>（<code>Tool.ts:405</code>）。你的 <code>delete_file</code> 因此会被当成可逆操作，没有任何东西会救你。',
+  },
+  {
+    recall: true,
+    q: '不看上文，用自己的话写下来：为什么 fail-closed 对 <code>isConcurrencySafe</code> 成立，对 <code>isDestructive</code> 却不成立？',
+    reveal: '<strong>关键在后果是否对称。</strong><br>① <code>isConcurrencySafe</code> 猜错的两个方向代价<strong>差得很远</strong>。猜成 <code>true</code> 是难复现的数据竞争，猜成 <code>false</code> 只是慢一点。存在一个明确的「猜错了也不会出事」的方向，所以能设安全默认值。<br>② <code>isDestructive</code> <strong>没有</strong>这样的方向。默认 <code>false</code> 是统计常见值，不指向安全那一侧；默认 <code>true</code> 又会让几乎所有工具都被当成危险操作，系统没法用。<br><strong>能带走的一条：</strong>fail-closed 只在后果不对称时成立。代价相当、或者压根没法从缺省推断的时候，正确做法是把责任显式还给作者，靠注释和 code review 兜住，别假装有个安全默认值。<code>toAutoClassifierInput</code> 默认 <code>\'\'</code>（＝跳过分类器）也属于这一类，所以源码专门注明「security-relevant tools must override」。',
+  },
+])
+</script>
+
+</body>
+</html>

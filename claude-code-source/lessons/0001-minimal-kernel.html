@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 0001 课 · 极简内核：150 行的 Agent 运行时</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<p class="lesson-meta">第 0001 课 · Claude Code 源码架构</p>
+<h1>极简内核</h1>
+<p class="lesson-sub">用 150 行写出一个和 <code>src/query.ts</code> <strong>形状相同</strong>的 Agent 运行时。这一课之后，你手里会有一颗种子——后面每一课都往它身上加一个模块。</p>
+
+<div class="box box-do">
+  <p class="box-title">这节课结束时你会有</p>
+  <ul>
+    <li>一个能跑的 <code>mini-cc v0</code>（已经建好在 <code>mini-cc/</code>，无需 API key 也能跑）</li>
+    <li>三个能解释清楚的设计决定：<strong>为什么是生成器</strong>、<strong>为什么返回终止原因</strong>、<strong>为什么状态要整体重写</strong></li>
+    <li>一条你以后每加一个模块都会用到的定位线索</li>
+  </ul>
+</div>
+
+<h2>你已经知道的，和这节课要改的</h2>
+
+<p>你在 <a href="file:///D:/code/learning/harness-engineering/lessons/0002-single-agent-loop.html">harness-engineering 第 0002 课</a>里写过单 Agent 循环，大概长这样：</p>
+
+<pre><code>async function run(prompt) {
+  const messages = [{ role: 'user', content: prompt }]
+  while (true) {
+    const res = await model.complete(messages)
+    if (!hasToolUse(res)) <span class="hl">return res.text</span>   <span class="cm">// ← 返回答案</span>
+    messages.push(res, await runTools(res))
+  }
+}</code></pre>
+
+<p>这个循环是对的。Claude Code 的 <code>query.ts</code> 有 1680 行，但骨架跟它一模一样。<strong>这节课不改骨架，改的是骨架的三个接口</strong>——而这三处改动，正是「demo」和「能在生产里跑三小时不崩」的分界线。</p>
+
+<h2>改动一：返回值不是答案，是「为什么停下来」</h2>
+
+<p>上面那段代码 <code>return res.text</code>。看起来天经地义——用户问问题，函数返回答案。</p>
+
+<p>但想一下调用方真正需要什么。终端 UI 拿到这个字符串之后，要判断：这是<em>正常答完了</em>，还是<em>撞上轮次上限被硬停的</em>？是<em>用户按了 Esc</em>，还是<em>某个钩子拒绝让它结束</em>？这四种情况下界面要显示的东西完全不同——但它们返回的都是一段文字。</p>
+
+<p>所以 Claude Code 把这两件事拆开了：</p>
+
+<p class="src-ref">src/query.ts:216 · query() 的签名</p>
+<pre><code>export async function* query(params: QueryParams): AsyncGenerator&lt;
+  StreamEvent | RequestStartEvent | Message | ...,   <span class="cm">// ← yield 出去的：内容</span>
+  <span class="hl">Terminal                                          <span class="cm">// ← return 回来的：终止原因</span></span>
+&gt;</code></pre>
+
+<p><strong>答案早就通过 <code>yield</code> 一条条交付出去了</strong>，不需要在最后再返回一次。<code>return</code> 这个位置就空了出来，用于回答一个调用方真正需要的问题：控制流为什么走到了这里。</p>
+
+<div class="box box-real">
+  <p class="box-title">对照真实源码</p>
+  <p><code>query.ts</code> 里能找到这些 <code>return</code>：<code>{ reason: 'completed' }</code>、<code>{ reason: 'stop_hook_prevented' }</code>（:1238）。<code>mini-cc</code> 的 <code>Terminal</code> 只有三种，但位置一样。</p>
+  <p style="margin-top:0.5rem"><strong>⚠️ 读码提醒：</strong>源码仓库的 <code>src/query/transitions.ts</code> 是自动生成的桩，整个文件只有 <code>export type Terminal = any</code>。你要从 <code>query.ts</code> 的实际 <code>return</code> 语句反推它的真实形状。<code>src/</code> 下 2829 个 TS 文件里有 123 个是这种桩——读到类型莫名其妙是 <code>any</code> 时，先看看文件头。</p>
+</div>
+
+<h2>改动二：为什么必须是生成器</h2>
+
+<p>普通函数是「调用 → 等待 → 拿到返回值」。有两件事让它不够用：</p>
+
+<ol class="steps">
+  <li><strong>模型是逐字吐出来的。</strong>终端里文字一个个蹦出来，不是等全部生成完再显示。函数必须能「一边算一边往外交付」。</li>
+  <li><strong>一次提问可能包含好几轮请求。</strong>模型读了三个文件才回答你，中间的每条消息、每个工具调用、每次进度更新，UI 都要实时显示。</li>
+</ol>
+
+<p><code>async function*</code> 正好解决这个：函数体里每写一个 <code>yield x</code>，外面的 <code>for await</code> 就立刻收到一个 <code>x</code>，函数则暂停在原地等下一次索取。</p>
+
+<div class="box box-why">
+  <p class="box-title">还有一个免费的好处：取消</p>
+  <p>外面调 <code>.return()</code>，生成器会在当前 <code>yield</code> 处抛出中断，<code>finally</code> 和 <code>using</code> 声明的清理逻辑<strong>自动跑</strong>。用户按 Esc 中断时走的就是这条路。</p>
+  <p style="margin-top:0.5rem">这是普通函数给不了的——普通 <code>async</code> 函数一旦 await 出去，你没有干净的办法让它「停在半路并清理现场」。</p>
+</div>
+
+<h2>改动三：跨轮次的状态要显式打包</h2>
+
+<p>这是三处改动里最不直观的一处，也是最能体现「这段代码被真实世界打磨过」的一处。</p>
+
+<p>一个跑很多轮的循环，最容易出的 bug 是<strong>某个变量在某条分支上忘了更新</strong>。<code>query.ts</code> 里有 <strong>9 个变量</strong>需要跨轮次携带（消息历史、压缩状态、重试计数、stopHookActive……），而循环里有 <strong>7 处 <code>continue</code></strong>。</p>
+
+<p>如果每处 <code>continue</code> 前都写 9 行赋值——漏掉一行不会报错。它只会在某个罕见路径上表现为诡异行为：比如「reactive 压缩跑了两次」或者「重试计数没归零导致死循环」。这类 bug 极难复现，因为你得先走到那条罕见分支上。</p>
+
+<p>解法是把它们打包成一个 <code>State</code> 对象：</p>
+
+<p class="src-ref">src/query.ts:262-276 · 源码注释原文</p>
+<pre><code><span class="cm">// 跨迭代的可变状态。循环体在每轮开头解构它，这样读取时仍是裸变量名
+// （`messages`、`toolUseContext`）。各个 continue 点整体写 `state = { ... }`，
+// 而不是散落 9 条独立赋值。</span></code></pre>
+
+<p>关键在于：<strong>整体重写意味着「要么全写，要么类型报错」</strong>。TypeScript 会拒绝一个缺字段的对象字面量。漏字段从「运行时的罕见惊喜」变成了「编译期的即时错误」——没有中间状态。</p>
+
+<p><code>mini-cc</code> 的 <code>State</code> 只有 3 个字段，看起来这个约束是小题大做。但它现在就成立，而且<strong>字段越多越值钱</strong>——这一课先把形状立对，后面几课往里加字段时你就免费拿到了这份保护。</p>
+
+<h2>顺带一个硬约束：tool_use 必须配对</h2>
+
+<p>这条不是设计选择，是 API 契约：<strong>每一个 <code>tool_use</code> 都必须有配对的 <code>tool_result</code></strong>，否则下一轮请求直接 400。</p>
+
+<p>推论有点反直觉：<strong>工具执行函数永远不能向上抛异常。</strong>工具炸了、工具不存在、参数不对——全都要转成一条 <code>is_error: true</code> 的 <code>tool_result</code> 返回，让模型自己看到错误并换个思路。</p>
+
+<div class="box box-trap">
+  <p class="box-title">真实源码里同一约束的三个体现</p>
+  <ul>
+    <li><code>ensureToolResultPairing()</code> —— 请求发出前给悬空的 <code>tool_use</code> 补一条合成 error result</li>
+    <li><code>yieldMissingToolResultBlocks()</code> —— <strong>用户中断时</strong>补桩。Esc 按下的那一刻可能有三个工具跑到一半，每个都留着悬空的 <code>tool_use</code></li>
+    <li>整个 <code>runOne()</code> 被 <code>try/catch</code> 包住</li>
+  </ul>
+</div>
+
+<h2>动手：跑起来，然后盯住一个数字</h2>
+
+<p>代码已经建好了。打开终端：</p>
+
+<pre><code>cd D:\code\learning\claude-code-source\mini-cc
+bun run src/v0/main.ts "看看 src/v0 里有什么"</code></pre>
+
+<p>没有 <code>DEEPSEEK_API_KEY</code> 也能跑——它会自动切到离线剧本模式（<code>model.ts</code> 里的 <code>MockModel</code>）。你应该看到：</p>
+
+<pre><code>模型来源：Mock 剧本（未检测到 DEEPSEEK_API_KEY）
+&gt; 看看 src/v0 里有什么
+
+── 第 1 轮 ──────────────
+      [mock] <span class="hl">本轮模型收到 1 条消息</span>
+我先看看这个目录里有什么。
+  ⚙ list_dir {"path":"src/v0"}
+  → loop.ts…
+── 第 2 轮 ──────────────
+      [mock] <span class="hl">本轮模型收到 3 条消息</span>
+找到了内核文件，我读一下它。
+  ⚙ read_file {"path":"src/v0/loop.ts"}
+  →     1	/**…
+── 第 3 轮 ──────────────
+      [mock] <span class="hl">本轮模型收到 5 条消息</span>
+loop.ts 是一个 async generator：yield 事件、return 终止原因……
+
+终止原因：正常结束</code></pre>
+
+<div class="box box-why">
+  <p class="box-title">盯住那个数字：1 → 3 → 5</p>
+  <p>每轮增加 <strong>2 条</strong>：一条 assistant 消息（含 <code>tool_use</code>），一条 user 消息（含 <code>tool_result</code>）。</p>
+  <p style="margin-top:0.5rem">这就是整个系统所有成本问题的源头。<strong>模型没有记忆</strong>——它"记得"第 1 轮列过目录，只因为那条 <code>tool_result</code> 还原封不动地躺在 <code>messages</code> 里，而且<strong>每一轮都要完整重发一遍</strong>。</p>
+  <p style="margin-top:0.5rem">第 3 轮读的那个文件内容，到第 30 轮还在占位置。这一个观察会引出后面四节课：<a href="../reference/glossary.html#ctx">结果预算</a>（别让 800KB 日志进来）、<a href="../reference/glossary.html#cache">Prompt Caching</a>（重发的部分别重算）、<a href="../reference/glossary.html#ctx">三级压缩</a>（满了怎么办）。</p>
+</div>
+
+<h3>再做两个 30 秒的实验</h3>
+
+<p><strong>实验 A —— 逼出 <code>max_turns</code>：</strong>把 <code>main.ts</code> 里的 <code>maxTurns: 10</code> 改成 <code>maxTurns: 2</code>，重跑。终止原因会从「正常结束」变成「撞上轮次上限（跑了 2 轮）」。<em>这就是改动一的价值：调用方不需要猜。</em></p>
+
+<p><strong>实验 B —— 打破 State：</strong>打开 <code>src/v0/loop.ts</code>，在循环末尾把整体重写改成漏掉一个字段：</p>
+
+<pre><code>state = {
+  messages: [...messages, assistant, { role: 'user', content: results }],
+  turnCount: turnCount + 1,
+  <span class="cm">// transition: 'tool_use',   ← 注释掉这一行</span>
+}</code></pre>
+
+<p>然后跑 <code>bunx tsc --noEmit</code>。<strong>编译器当场拦住你。</strong>这就是「要么全写，要么类型报错」的实际手感——把它记在肌肉里，后面加到 10 个字段时你会庆幸。</p>
+
+<h2>接上真实模型（DeepSeek）</h2>
+
+<p>本课程用 DeepSeek。到 <a href="https://platform.deepseek.com/api_keys">platform.deepseek.com</a> 申请 key，然后：</p>
+
+<pre><code><span class="cm"># PowerShell（当前会话）</span>
+$env:DEEPSEEK_API_KEY = "sk-..."
+bun run src/v0/main.ts "读一下 src/v0/loop.ts，告诉我它的终止条件是什么"</code></pre>
+
+<p>启动行会从「Mock 剧本」变成 <code>DeepSeek (deepseek-v4-flash)</code>。这次的工具调用是模型<strong>真的自己决定</strong>的——没有任何代码规定它该先读哪个文件。</p>
+
+<div class="box box-real">
+  <p class="box-title">注意刚才换 provider 时，哪些文件动了</p>
+  <p>这个项目原本调的是 Anthropic API，换成 DeepSeek 时——<strong><code>loop.ts</code>、<code>tools.ts</code>、<code>types.ts</code> 一行都没改</strong>，只动了 <code>model.ts</code>。</p>
+  <p style="margin-top:0.5rem">这就是你在 harness-engineering 学过的「三个边界」在起作用：循环只依赖 <code>ModelAdapter</code> 这一个接口，不依赖任何 SDK。<em>离线 Mock 模式能存在，也是同一个边界的副产品。</em></p>
+</div>
+
+<div class="box box-trap">
+  <p class="box-title">一个真实的踩坑，值得你知道</p>
+  <p>DeepSeek 同时提供两种兼容端点：<code>https://api.deepseek.com</code>（OpenAI 格式）和 <code>https://api.deepseek.com/anthropic</code>（Anthropic 格式）。</p>
+  <p style="margin-top:0.5rem">后者看起来是更好的选择——我们内部的消息结构本来就是 Anthropic 式的 content blocks（<strong>刻意跟被研究的 <code>claude-code-source</code> 保持一致</strong>），用它就不用写转换。但官方文档在<a href="https://api-docs.deepseek.com/zh-cn/guides/anthropic_api">「不支持的字段」</a>里明确列出了 <strong>tool use</strong>。这门课整个建立在工具调用上，所以只能走 OpenAI 格式端点。</p>
+  <p style="margin-top:0.5rem">代价是 <code>model.ts</code> 里多了一层双向转换。两处结构性差异值得看一眼：<br>
+  ① 工具调用：我们放在 assistant 的 <code>content</code> 数组里，OpenAI 放在 <code>tool_calls</code> 字段上。<br>
+  ② 工具结果：我们塞进<strong>一条</strong> user 消息，OpenAI 要求<strong>每个结果一条独立消息</strong>（<code>role: 'tool'</code>）——是一对多展开，不是一对一映射。</p>
+  <p style="margin-top:0.5rem">顺带一提，转换回来时如果模型生成的参数不是合法 JSON，<code>model.ts</code> <strong>不抛异常</strong>，而是照样产出 <code>tool_use</code> 块、把参数留空，让后续的参数校验失败并回一条 <code>is_error</code> 结果。理由就是上一节那条硬约束：<em>配对不能断</em>。这也是你下一课要正式学的 <a href="../reference/glossary.html#tool">fail-closed</a>。</p>
+</div>
+
+<h2>检验一下</h2>
+
+<div class="quiz" id="quiz"></div>
+
+<h2>这一课在整张地图的哪里</h2>
+
+<p>你现在拥有的是<strong>中列的主干</strong>——架构报告那张流程图里从上到下的那条线。后面每一课加的东西，都是往左列（喂数据）或右列（卡预算）添砖：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:14%">课</th><th style="width:36%">加什么</th><th>它挡住的具体失败</th></tr></thead>
+<tbody>
+<tr><td><strong>0001</strong> ✅</td><td>循环骨架 · 显式状态 · 终止原因</td><td>调用方分不清为什么停了；漏改字段的罕见 bug</td></tr>
+<tr><td>0002</td><td>工具契约 · fail-closed 默认值</td><td>工具作者少写一行 → 数据竞争</td></tr>
+<tr><td>0003</td><td>并发分批</td><td>「读 A、改 A、再读 A」读到旧内容</td></tr>
+<tr><td>0004</td><td>权限判定顺序</td><td>开了 bypass 就能改你的 <code>.git/config</code></td></tr>
+<tr><td>0005</td><td>结果预算</td><td>一次 <code>npm test</code> 的 800KB 日志吃光额度</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>读一份一手资料</h2>
+
+<div class="box box-do">
+  <p class="box-title">本课推荐（选一个读，20 分钟）</p>
+  <p><strong>首选 · <a href="https://www.anthropic.com/engineering/building-effective-agents">Building Effective AI Agents</a></strong>（Anthropic 工程博客）<br>
+  读它对 <em>workflow</em> 与 <em>agent</em> 的区分：workflow 是「LLM 和工具按预定义代码路径编排」，agent 是「LLM 自己决定流程和工具使用」。你刚写的 <code>loop.ts</code> 正是后者——<strong>没有任何一处代码规定「先列目录再读文件」，那是模型自己决定的</strong>。这是理解后面所有约束机制的前提：正因为流程不由你控制，你才需要预算、权限和终止条件去<em>约束</em>它。</p>
+  <p style="margin-top:0.6rem"><strong>就近对照 · <a href="../../../claude-code-source/docs/architecture-report.html">架构报告第 00–01 章</a></strong><br>
+  「全景与启动链路」和「主循环 query()」。你刚写完的东西，报告用两章讲了一遍——现在读会比开课前读顺畅得多。</p>
+</div>
+
+<div class="ask-teacher">
+  <strong>💬 有不清楚的地方，直接问我。</strong>我是你这门课的老师，随时可以：
+  <ul style="margin-bottom:0">
+    <li>把 <code>query.ts</code> 里任意一段拆开讲（比如那 7 处 <code>continue</code> 分别在什么情况下触发）</li>
+    <li>陪你改 <code>mini-cc</code>，试试「如果这样写会怎样」</li>
+    <li>解释某条源码注释背后的故事</li>
+    <li>如果这一课太浅或太深，说一声，我调整下一课的难度</li>
+  </ul>
+</div>
+
+<div class="footer-nav">
+  <p><strong>相关：</strong>
+    <a href="../reference/glossary.html">速查 · 架构术语表</a> ·
+    <a href="../MISSION.md">学习目标</a> ·
+    <a href="../RESOURCES.md">资源清单</a> ·
+    <a href="../../../claude-code-source/docs/architecture-report.html">架构报告全文</a>
+  </p>
+  <p style="color:var(--text-secondary);font-size:0.88rem;margin-top:0.75rem">
+    下一课：<strong>工具契约</strong> —— 为什么 <code>src/Tool.ts</code> 里一个工具要回答 40 个问题，以及 <code>TOOL_DEFAULTS</code> 那几行默认值为什么全是 <code>false</code>。
+  </p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+<script>
+Quiz.render('#quiz', [
+  {
+    q: '<code>query()</code> 的 <code>return</code> 值（也就是 <code>Terminal</code>）是什么？',
+    options: [
+      '模型生成的最终文字答案',
+      '循环为何停止的终止原因',
+      '本轮累计消耗的资源用量',
+    ],
+    answer: 1,
+    explain: '答案已经通过 <code>yield</code> 一条条交付出去了，不需要最后再返回一次。<code>return</code> 的位置因此空了出来，用来回答调用方真正需要的问题——是正常答完、撞上轮次上限、被用户中断，还是被 stop hook 拒绝？这四种情况界面要显示的东西完全不同。',
+  },
+  {
+    q: '为什么工具执行失败时，<strong>不能</strong>直接向上抛异常？',
+    options: [
+      '抛出异常会让终端渲染错乱',
+      '缺失配对会让下轮请求失败',
+      '中断异常会让重试计数归零',
+    ],
+    answer: 1,
+    explain: 'API 的硬约束：每个 <code>tool_use</code> 必须有配对的 <code>tool_result</code>，否则下一轮请求直接 400。所以工具炸了、工具不存在、参数不对，全都要转成 <code>is_error: true</code> 的结果返回。真实源码里 <code>yieldMissingToolResultBlocks()</code> 专门处理最棘手的一种情况：用户按 Esc 时可能有三个工具正跑到一半。',
+  },
+  {
+    q: '你要往循环里加一个「API 重试计数」，它需要在 <code>continue</code> 之后继续存活。放哪里？',
+    options: [
+      '放进循环外部的局部变量',
+      '放进状态对象作为新字段',
+      '放进模块级的全局变量里',
+    ],
+    answer: 1,
+    explain: '需要跨轮次存活 → 进 <code>State</code>，这样每个 <code>continue</code> 点都被编译器强制回答「这一路径下它该是多少」。<strong>但真实源码里有一个刻意的反例值得知道：</strong><code>taskBudgetRemaining</code> 被放在循环内的局部变量而非 <code>State</code>，注释写明理由是「以免改动那 7 处 continue」。所以判断依据不是教条，而是：<em>这个变量在 continue 之后是否需要保持修改？</em> 需要就进 State，不需要就别去动那 7 个点。',
+  },
+  {
+    recall: true,
+    q: '不看上文，用自己的话写下来：为什么这个循环必须用 <code>async function*</code>，而不能用普通 <code>async</code> 函数？（至少写出两个理由）',
+    reveal: '<strong>三个理由，写出两个就算过：</strong><br>① <strong>流式交付</strong>——模型逐字吐出，函数必须能「一边算一边往外交付」，而不是算完再返回。<br>② <strong>一次提问 = 多轮请求</strong>——中间每条消息、每个工具调用、每次进度更新都要实时到 UI，普通函数只有一次返回机会。<br>③ <strong>可取消</strong>（这个最容易漏）——外面调 <code>.return()</code>，生成器在当前 <code>yield</code> 处中断，<code>finally</code> 和 <code>using</code> 的清理逻辑自动跑。用户按 Esc 走的就是这条路。',
+  },
+])
+</script>
+
+</body>
+</html>

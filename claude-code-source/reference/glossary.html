@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>速查 · Claude Code 架构术语表</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .glossary dt {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    margin: 1.4rem 0 0.25rem;
+    font-size: 1rem;
+  }
+  .glossary dt .en {
+    font-family: var(--font-mono);
+    font-weight: 400;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-left: 0.5rem;
+  }
+  .glossary dt .ch {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--bg);
+    background: var(--accent-2);
+    border-radius: 3px;
+    padding: 0.05rem 0.35rem;
+    margin-left: 0.5rem;
+    vertical-align: 0.15em;
+  }
+  .glossary dd { margin: 0 0 0 0; padding-left: 0; }
+  .glossary dd .where {
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    display: block;
+    margin-top: 0.2rem;
+  }
+  .toc {
+    font-family: var(--font-sans);
+    font-size: 0.9rem;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.8rem 1rem;
+    margin: 1.5rem 0;
+  }
+  .toc a { margin-right: 0.9rem; white-space: nowrap; display: inline-block; }
+</style>
+</head>
+<body>
+
+<p class="lesson-meta">速查 · Reference</p>
+<h1>Claude Code 架构术语表</h1>
+<p class="lesson-sub">这门课自始至终按这份术语表说话。遇到不认识的词先回来查这里。<span class="ch">章</span> 标记的是它在 <a href="../../../claude-code-source/docs/architecture-report.html">架构报告</a>里的章节号。</p>
+
+<div class="toc">
+  <a href="#loop">循环与状态</a>
+  <a href="#tool">工具与执行</a>
+  <a href="#ctx">上下文与预算</a>
+  <a href="#cache">缓存</a>
+  <a href="#safe">权限与安全</a>
+  <a href="#agent">多 Agent</a>
+  <a href="#principle">三条设计原则</a>
+</div>
+
+<h2 id="loop">循环与状态</h2>
+<dl class="glossary">
+
+<dt>Agentic Loop<span class="en">agent loop</span><span class="ch">00</span></dt>
+<dd>整个系统的骨架：发请求 → 模型回复 → 回复里有 <code>tool_use</code> 吗 → 有就本地执行、把结果塞回对话、再发一次 → 没有就结束。一次用户提问可能触发 8 次 API 调用。
+<span class="where">src/query.ts</span></dd>
+
+<dt>query()<span class="en">AsyncGenerator</span><span class="ch">01</span></dt>
+<dd>核心循环函数，类型是 <code>AsyncGenerator&lt;StreamEvent | Message, Terminal&gt;</code>。它<strong>不返回答案</strong>——答案通过 yield 逐条交付；return 值是终止原因。
+<span class="where">src/query.ts:238 · queryLoop()</span></dd>
+
+<dt>Terminal<span class="en">终止原因</span><span class="ch">01</span></dt>
+<dd>循环的返回值：正常结束 / 用户中断 / 达到轮次上限 / 被 stop hook 拒绝。调用方靠它决定下一步控制流。
+<span class="where">src/query/transitions.ts（源码仓库中是 stub）</span></dd>
+
+<dt>State<span class="en">显式循环状态</span><span class="ch">01</span></dt>
+<dd>跨轮次携带的 10 个变量打包成的对象。循环里有 7 处 <code>continue</code>，每处都<strong>整体重写</strong> <code>state = { ... }</code>——要么全写，要么类型报错，没有「漏了一个」的中间状态。
+<span class="where">src/query.ts:201</span></dd>
+
+<dt>三层状态<span class="en">process / session / turn</span><span class="ch">02</span></dt>
+<dd>按<strong>活多久</strong>分层：进程级（<code>bootstrap/state.ts</code> 模块单例，如 sessionId、累计成本）、会话级（<code>AppState</code> + 自研 store，变了要重画 UI）、轮次级（<code>ToolUseContext</code>，只在这次工具调用期间有意义）。分层的本质是<em>让每个数据的可见范围刚好等于它的作用范围</em>。</dd>
+
+<dt>ToolUseContext<span class="en">轮次级上下文包</span><span class="ch">02</span></dt>
+<dd>一路传给每个工具的参数包：abortController、readFileState、appState 存取器、进度回调。放全局会导致两个并发子 agent 互相中断。</dd>
+
+</dl>
+
+<h2 id="tool">工具与执行</h2>
+<dl class="glossary">
+
+<dt>tool_use / tool_result<span class="en">API 契约</span><span class="ch">00</span></dt>
+<dd>模型想调用工具时输出的结构化 JSON 叫 <code>tool_use</code>；客户端执行后把结果作为新消息追加回对话，叫 <code>tool_result</code>。<strong>硬约束：每个 tool_use 必须有配对的 tool_result</strong>，否则下一轮请求直接 400。
+<span class="where">ensureToolResultPairing() · yieldMissingToolResultBlocks()</span></dd>
+
+<dt>Tool 接口<span class="en">40+ 成员</span><span class="ch">03</span></dt>
+<dd>一个工具要同时回答五种消费者的问题：模型（参数格式）、权限系统（危不危险）、调度器（能否并行）、终端 UI（怎么画）、安全分类器（压成一行风险文本）。所以成员爆炸到 40+ 不是设计失误。
+<span class="where">src/Tool.ts:362</span></dd>
+
+<dt>fail-closed<span class="en">失败时关闭</span><span class="ch">03</span></dt>
+<dd>信息缺失时选那个「猜错了也不会出事」的方向。<code>TOOL_DEFAULTS</code> 里 <code>isConcurrencySafe</code> 和 <code>isReadOnly</code> 都默认 <code>false</code>——工具作者忘了声明，最坏结果只是慢一点，而不是数据竞争。
+<strong>成立的前提是后果不对称</strong>：<code>isDestructive</code> 默认 <code>false</code> 就<em>不是</em>安全方向，只是统计常见值，源码把责任明确还给了作者。
+<span class="where">src/Tool.ts:757 · TOOL_DEFAULTS</span></dd>
+
+<dt>buildTool()<span class="en">三层展开</span><span class="ch">03</span></dt>
+<dd>所有工具的唯一构造入口，默认值因此只存在一处。展开顺序是 <code>{...TOOL_DEFAULTS, userFacingName: () =&gt; def.name, ...def}</code>——<code>userFacingName</code> 夹在中间，因为它要用 <code>def.name</code>，但又必须能被 <code>def</code> 自己的声明覆盖。
+<span class="where">src/Tool.ts:783</span></dd>
+
+<dt>五种消费者<span class="en">为什么是 47 个成员</span><span class="ch">03</span></dt>
+<dd>同一次工具调用被五种角色看到，每种看到的形态都不同：<strong>模型</strong>（<code>inputSchema</code>/<code>description</code>）、<strong>权限系统</strong>（<code>isReadOnly</code>/<code>isDestructive</code>）、<strong>调度器</strong>（<code>isConcurrencySafe</code>/<code>interruptBehavior</code>）、<strong>终端 UI</strong>（8 个 <code>render*</code>）、<strong>安全分类器</strong>（<code>toAutoClassifierInput</code>）。这是替代死记 47 个成员的框架。</dd>
+
+<dt>validateInput()<span class="en">给模型的重试机会</span><span class="ch">04</span></dt>
+<dd>工具自己的输入合法性检查。<strong>失败不抛异常</strong>，而是返回一条给模型看的话——模型据此补参数重试。是「每个 tool_use 必须有配对 tool_result」这条硬约束的延续。单次调用 7 步链路里的 B 步。</dd>
+
+<dt>partitionToolCalls()<span class="en">并发分批</span><span class="ch">04</span></dt>
+<dd>把一批 tool_use 切成若干批次：<strong>位置上相邻</strong>的安全（只读）调用合并成一批并发跑，碰到不安全的就断开另起一批。批内并发（上限 10），<strong>批与批之间严格串行</strong>。注意是「相邻」而非「所有只读的」——「读 A、改 A、再读 A」会被切成 3 批。
+<span class="where">src/services/tools/toolOrchestration.ts</span></dd>
+
+<dt>ToolSearch<span class="en">延迟加载工具</span><span class="ch">03</span></dt>
+<dd>工具超过 100 个时，完整 schema 能吃掉一两万 token。解法：<code>defer_loading: true</code> 的工具只发名字，模型要用时再通过 ToolSearch 取详情。「目录常驻，正文按需」。</dd>
+
+<dt>结果预算<span class="en">tool result budget</span><span class="ch">06</span></dt>
+<dd>单个结果超 50,000 字符就<strong>落盘</strong>到 <code>tool-results/</code>，模型只收到 2000 字节预览 + 文件路径（包在 <code>&lt;persisted-output&gt;</code> 里）。单条消息聚合上限 200,000 字符。<code>Read</code> 工具显式设 <code>Infinity</code> 退出这套机制，否则会形成 Read→落盘→再 Read 的死循环。</dd>
+
+</dl>
+
+<h2 id="ctx">上下文与预算</h2>
+<dl class="glossary">
+
+<dt>上下文工程<span class="en">context engineering</span><span class="ch">06</span></dt>
+<dd>把有限的上下文窗口当作<strong>需要主动经营的资源</strong>。三个问题：装什么、怎么装、满了怎么办。</dd>
+
+<dt>attachment<span class="en">77 种注入类型</span><span class="ch">06</span></dt>
+<dd>系统需要「插一句话」给模型时（文件被外部改了、待办还剩 3 项、上下文快满了），把它伪装成用户消息，用 <code>&lt;system-reminder&gt;</code> 包起来。
+<span class="where">src/utils/attachments.ts（3998 行）</span></dd>
+
+<dt>&lt;system-reminder&gt;<span class="en">结构隔离标签</span><span class="ch">06 · 14</span></dt>
+<dd>所有系统注入内容的统一包装。系统提示词里明确告诉模型：带这个标签的内容是系统加的，<strong>与它出现的位置没有因果关系</strong>——既防止模型误以为是用户说的，也防止工具结果里的伪造标签被当成系统指令。</dd>
+
+<dt>回灌<span class="en">状态写出去再读回来</span><span class="ch">10</span></dt>
+<dd>不指望模型「记住」任何东西。待办清单存在外部状态里，<strong>每轮通过 attachment 重新贴到对话末尾</strong>，永远处在「最近」的位置。代价是每轮多几百 token，换来行为的确定性。</dd>
+
+<dt>microCompact<span class="en">日常清扫</span><span class="ch">06</span></dt>
+<dd>不动结构，只把很久以前那些工具结果的<strong>正文</strong>挖掉，换成 <code>[Old tool result content cleared]</code>。骨架还在（模型知道「我第 3 轮读过这个文件」），内容没了。</dd>
+
+<dt>autoCompact<span class="en">搬家</span><span class="ch">06</span></dt>
+<dd>接近阈值（<code>window − 13k</code>）时触发：把整段历史交给模型写摘要，立一个压缩边界，之后只带摘要 + 边界后的新消息。有损，所以要尽量晚做——但留 13000 token 缓冲，因为写摘要本身也要花额度。</dd>
+
+<dt>reactiveCompact<span class="en">救火</span><span class="ch">06</span></dt>
+<dd>请求已经发出去并被服务端以 <code>prompt_too_long</code> 拒绝了，就地压缩后重试同一请求。这个错误<strong>不会</strong>传给 SDK 调用方——很多调用方看到 <code>error</code> 字段就直接终止会话了。</dd>
+
+<dt>memdir<span class="en">记忆目录</span><span class="ch">07</span></dt>
+<dd>「一个事实一个文件」：每个 <code>.md</code> 只存一条信息，<code>MEMORY.md</code> 作索引。索引常驻，正文按 turn 相关性召回。召回<strong>不用向量检索</strong>，而是让 Sonnet 读 manifest 选 ≤5 个文件——没有额外索引要维护，加一条记忆就是加一个文件。
+<span class="where">src/memdir/findRelevantMemories.ts</span></dd>
+
+<dt>Skill<span class="en">可插拔提示词包</span><span class="ch">09</span></dt>
+<dd>一个目录 + 一份 <code>SKILL.md</code>。解决的矛盾是：一个月才用一次的发布流程，写进 CLAUDE.md 就是每轮都付 token。Skill 平时只加载一行摘要（清单预算 = 上下文的 <strong>1%</strong>），模型判断该用了才注入全文。</dd>
+
+</dl>
+
+<h2 id="cache">缓存</h2>
+<dl class="glossary">
+
+<dt>Prompt Caching<span class="en">前缀缓存</span><span class="ch">05</span></dt>
+<dd>在请求某个位置打 <code>cache_control</code> 标记，意思是「这个位置<strong>之前</strong>的所有内容请存起来」。下次请求若开头这一大段<strong>一字节都没变</strong>，服务端直接复用，命中部分只要 10% 的价格。</dd>
+
+<dt>前缀匹配<span class="en">prefix matching</span><span class="ch">05</span></dt>
+<dd>缓存匹配的是「从第一个字节开始的连续一段」，不是「内容相似」。残酷后果：<strong>越靠前的内容改动，代价越大</strong>。system prompt 里一个字符变了（哪怕 "saved 3 days ago" → "4 days ago"），后面全部作废。</dd>
+
+<dt>缓存击穿<span class="en">cache break</span><span class="ch">05</span></dt>
+<dd>缓存没命中。API 只告诉你「这次重新算了」，不告诉你为什么。所以有一个 534 行的模块做<strong>事后归因</strong>：对 system 块做两份哈希（剥掉 / 保留 <code>cache_control</code>），分别检测内容变化与 scope/TTL 翻转。
+<span class="where">src/services/api/promptCacheBreakDetection.ts</span></dd>
+
+<dt>断点上限 4<span class="en">cache breakpoints</span><span class="ch">05 · 06</span></dt>
+<dd>每次请求最多 4 个 <code>cache_control</code>。分配：system 块末尾一个、工具清单末尾一个、消息历史里一个（会移动）。<strong>超了 API 直接 400</strong>——这就是源码里那句 <code>Do not add any more blocks for caching or you will get a 400</code> 的由来。</dd>
+
+<dt>为缓存做的让步<span class="en">cache-driven concessions</span><span class="ch">05</span></dt>
+<dd>这个代码库里大量「乍看很怪的写法」的统一解释：冻结字符串（"saved N days ago" 在创建时算好）、只改副本（<code>backfillObservableInput</code>）、增量 attachment、<code>...(cond &amp;&amp; { key })</code> 而非 <code>key: cond ? x : undefined</code>。</dd>
+
+</dl>
+
+<h2 id="safe">权限与安全</h2>
+<dl class="glossary">
+
+<dt>canUseTool()<span class="en">10 步固定顺序</span><span class="ch">12</span></dt>
+<dd>权限判定按<strong>严格顺序</strong>走 10 个检查点，先返回的那个赢。<em>顺序本身就是安全语义</em>：越是「用户明确表达过的意图」和「不可挽回的破坏」越靠前，越是「图省事的全局开关」越靠后。
+<span class="where">src/utils/permissions/permissions.ts:1158</span></dd>
+
+<dt>bypass 免疫<span class="en">步骤 1g</span><span class="ch">12 · 14</span></dt>
+<dd>对 <code>.git/</code>、<code>.claude/</code>、<code>.vscode/</code>、shell 配置文件的 safetyCheck 排在 bypassPermissions 模式<strong>之前</strong>，所以它赢。用户开「全放行」的本意是「常规操作别烦我」，不是「允许你改我的 git 配置」。这是最后一道不可绕过的闸。</dd>
+
+<dt>Plan Mode<span class="en">权限模式，不只是提示词</span><span class="ch">10</span></dt>
+<dd><code>mode: 'plan'</code> 是 <code>PermissionMode</code> 的一个真实取值。这个状态下所有写工具在<strong>权限层</strong>被系统性拒绝——不是靠模型自觉，是它根本调不动。</dd>
+
+<dt>auto 模式<span class="en">AI 批准 AI</span><span class="ch">12</span></dt>
+<dd>把「要不要批准」交给另一次模型调用（<code>yoloClassifier</code>）。但留了一批它<strong>无权决定</strong>的事：safetyCheck、<code>requiresUserInteraction</code> 的工具、PowerShell、Agent/REPL 工具。</dd>
+
+<dt>Prompt Injection<span class="en">提示词注入</span><span class="ch">14</span></dt>
+<dd>根源是模型<strong>分不清「指令」和「数据」</strong>——对它来说都是文字。攻击者不需要接触你的机器，只需让恶意文字出现在 Claude 会读到的地方（依赖注释、GitHub issue、网页）。</dd>
+
+<dt>五层防御<span class="en">没有一层声称能兜底</span><span class="ch">14</span></dt>
+<dd>① 系统提示词显式告知 ② <code>&lt;system-reminder&gt;</code> 结构隔离 ③ 输入侧净化（剥隐藏 Unicode、子进程环境变量白名单）④ <strong>权限侧免疫</strong>（就算模型上当也执行不了——这层才是真正的闸）⑤ 对用户坦率告知。</dd>
+
+</dl>
+
+<h2 id="agent">多 Agent</h2>
+<dl class="glossary">
+
+<dt>子 agent<span class="en">subagent</span><span class="ch">11</span></dt>
+<dd>开子 agent 最主要的动机<strong>不是并行提速，而是上下文隔离</strong>。翻几十个文件找废弃 API，主对话只需要最后那份清单——把翻文件的过程连同垃圾一起丢在子 agent 的上下文里。「用一次性上下文换一个摘要」。</dd>
+
+<dt>fork<span class="en">继承式子 agent</span><span class="ch">11</span></dt>
+<dd>直接继承父级的完整对话和 system prompt。背景不用交代，前缀完全一样所以<strong>缓存直接命中</strong>，启动几乎免费。代价是回到「上下文不隔离」。
+<em>适用场景相反：探索型任务用全新上下文，接力型任务用 fork。</em></dd>
+
+<dt>skipCacheWrite<span class="en">fork 的缓存技巧</span><span class="ch">05 · 11</span></dt>
+<dd>fork 时把 cache 标记前移一位（<code>messages.length - 2</code>），让写入变成服务端 no-op 合并，fork 不在 KV cache 里留自己的尾巴。</dd>
+
+</dl>
+
+<h2 id="principle">三条设计原则</h2>
+<p>报告第 15 章总结的、贯穿整个代码库的三条原则。<strong>这门课的第二个目标就是把它们内化成判断力。</strong></p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:22%">原则</th><th>含义</th><th style="width:34%">表现</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>缓存优先于优雅</strong></td>
+  <td>只要可能击穿 prompt cache，架构就让步</td>
+  <td>冻结字符串、只改副本、增量 attachment、移动断点</td>
+</tr>
+<tr>
+  <td><strong>默认 fail-closed</strong></td>
+  <td>信息缺失时倒向「猜错了也不会出事」的一侧</td>
+  <td>并发安全默认 false、只读默认 false、分类器输入默认空、schema 解析失败保持 passthrough</td>
+</tr>
+<tr>
+  <td><strong>状态写出去再读回来</strong></td>
+  <td>不要求模型记住任何东西</td>
+  <td>待办、任务、预算、模式、技能清单全部通过 attachment 回灌</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="footer-nav">
+  <p><strong>相关：</strong>
+    <a href="../lessons/0001-minimal-kernel.html">第 0001 课：极简内核</a> ·
+    <a href="../../../claude-code-source/docs/architecture-report.html">架构报告全文</a> ·
+    <a href="../MISSION.md">学习目标</a> ·
+    <a href="../RESOURCES.md">资源清单</a>
+  </p>
+</div>
+
+</body>
+</html>

@@ -33,6 +33,9 @@ Thumbs.db
 .idea/
 *.swp
 
+# 改写前的备份（humanizer-zh 润色时生成，仅供本地对照）
+*.orig
+
 # Python（仓库根目录另有 python/ 内容）
 __pycache__/
 *.pyc

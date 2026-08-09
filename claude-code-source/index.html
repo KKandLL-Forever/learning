@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code 源码架构 · 课程总览</title>
+<link rel="stylesheet" href="assets/styles.css">
+<style>
+  .lesson-list { list-style: none; margin: 1.5rem 0; }
+  .lesson-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 0.9rem;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid var(--border);
+    margin: 0;
+  }
+  .lesson-list .num {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--bg);
+    background: var(--accent-2);
+    border-radius: 3px;
+    padding: 0.12rem 0.45rem;
+    flex-shrink: 0;
+  }
+  .lesson-list .num.todo { background: var(--border); color: var(--text-secondary); }
+  .lesson-list .body { flex: 1; }
+  .lesson-list .title { font-family: var(--font-sans); font-weight: 700; font-size: 1rem; }
+  .lesson-list .desc { font-size: 0.9rem; color: var(--text-secondary); line-height: 1.55; }
+  .lesson-list .todo-title { color: var(--text-secondary); }
+  .pill {
+    font-family: var(--font-sans);
+    font-size: 0.72rem;
+    border: 1px solid var(--ok);
+    color: var(--ok);
+    border-radius: 10px;
+    padding: 0.05rem 0.5rem;
+    flex-shrink: 0;
+  }
+  .quick { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; margin: 1.5rem 0; }
+  .quick a {
+    font-family: var(--font-sans);
+    font-size: 0.92rem;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.7rem 0.9rem;
+    display: block;
+  }
+  .quick a:hover { border-color: var(--accent); }
+  .quick .k { font-weight: 700; display: block; }
+  .quick .v { color: var(--text-secondary); font-size: 0.84rem; }
+</style>
+</head>
+<body>
+
+<p class="lesson-meta">课程总览</p>
+<h1>Claude Code 源码架构</h1>
+<p class="lesson-sub">从一个 150 行的极简内核出发，每课加一个模块，逐步逼近 <code>D:\code\claude-code-source</code> 的真实架构。主教材是源码仓库的 <a href="../../claude-code-source/docs/architecture-report.html">架构报告</a>（16 章）。</p>
+
+<div class="quick">
+  <a href="MISSION.md"><span class="k">学习目标</span><span class="v">为什么学这个 · 双目标</span></a>
+  <a href="reference/glossary.html"><span class="k">速查 · 术语表</span><span class="v">这门课的统一说法</span></a>
+  <a href="RESOURCES.md"><span class="k">资源清单</span><span class="v">一手源码 + 官方博客</span></a>
+  <a href="../../claude-code-source/docs/architecture-report.html"><span class="k">架构报告</span><span class="v">主教材全文</span></a>
+</div>
+
+<h2>课程</h2>
+
+<ul class="lesson-list">
+  <li>
+    <span class="num">01</span>
+    <span class="body">
+      <a class="title" href="lessons/0001-minimal-kernel.html">极简内核</a>
+      <span class="desc">150 行写出和 <code>query.ts</code> 形状相同的运行时。生成器、终止原因、显式状态。</span>
+    </span>
+    <span class="pill">可学</span>
+  </li>
+  <li>
+    <span class="num">02</span>
+    <span class="body">
+      <a class="title" href="lessons/0002-tool-contract.html">工具契约</a>
+      <span class="desc">47 个成员不是设计失误——有五种消费者在看它。fail-closed 默认值，以及它救不了的那一个成员。</span>
+    </span>
+    <span class="pill">可学</span>
+  </li>
+  <li>
+    <span class="num todo">03</span>
+    <span class="body">
+      <span class="title todo-title">并发分批</span>
+      <span class="desc">只读的并发、写入的串行。为什么「读 A、改 A、再读 A」会被切成 3 批而不是 2 批。</span>
+    </span>
+  </li>
+  <li>
+    <span class="num todo">04</span>
+    <span class="body">
+      <span class="title todo-title">权限判定顺序</span>
+      <span class="desc">10 步固定顺序，<em>位置本身就是安全语义</em>。为什么 bypass 模式排在第 7 位而不是第 1 位。</span>
+    </span>
+  </li>
+  <li>
+    <span class="num todo">05</span>
+    <span class="body">
+      <span class="title todo-title">结果预算</span>
+      <span class="desc">一次 <code>npm test</code> 吐 800KB 日志怎么办。落盘 + 预览 + 路径。</span>
+    </span>
+  </li>
+  <li>
+    <span class="num todo">06</span>
+    <span class="body">
+      <span class="title todo-title">Prompt Caching</span>
+      <span class="desc">前缀匹配的残酷后果，以及这个代码库里那些「为缓存做的让步」。</span>
+    </span>
+  </li>
+  <li>
+    <span class="num todo">07</span>
+    <span class="body">
+      <span class="title todo-title">三级压缩</span>
+      <span class="desc">微压缩是日常清扫，自动压缩是搬家，被动压缩是救火。</span>
+    </span>
+  </li>
+  <li>
+    <span class="num todo">08</span>
+    <span class="body">
+      <span class="title todo-title">Attachment 回灌</span>
+      <span class="desc">不要求模型记住任何东西：状态写出去，每轮再读回来。</span>
+    </span>
+  </li>
+  <li>
+    <span class="num todo">09</span>
+    <span class="body">
+      <span class="title todo-title">子 Agent 与 fork</span>
+      <span class="desc">上下文隔离 vs 缓存命中——两个相反方向的权衡。</span>
+    </span>
+  </li>
+</ul>
+
+<p style="color:var(--text-secondary);font-size:0.9rem">课程弧线会根据学习进度调整，见 <a href="NOTES.md">NOTES.md</a>。</p>
+
+<h2>代码</h2>
+
+<p>动手部分都在 <code>mini-cc/</code>，按版本分目录，<strong>旧版本保留</strong>，方便回看架构演进：</p>
+
+<pre><code>cd D:\code\learning\claude-code-source\mini-cc
+bun install
+bun run src/v0/main.ts "看看 src/v0 里有什么"   <span style="color:var(--text-secondary)"># 第 0001 课</span>
+bun run src/v1/main.ts "看看 src/v1 里有什么"   <span style="color:var(--text-secondary)"># 第 0002 课</span></code></pre>
+
+<p>没有 <code>DEEPSEEK_API_KEY</code> 也能跑——会自动切到离线剧本模式。</p>
+
+<div class="footer-nav">
+  <p><strong>学习记录：</strong>
+    <a href="learning-records/0001-loop-shape-vs-loop-plumbing.md">0001 · 循环的形状不难，难的是循环的管道</a><br>
+    <a href="learning-records/0002-fail-closed-needs-asymmetry.md">0002 · fail-closed 不是「默认值都往保守写」</a>
+  </p>
+</div>
+
+</body>
+</html>

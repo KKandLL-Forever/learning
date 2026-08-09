@@ -1,0 +1,19 @@
+{
+  "name": "mini-cc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "从极简内核逐步逼近 Claude Code 架构的教学项目",
+  "scripts": {
+    "v0": "bun run src/v0/main.ts",
+    "v1": "bun run src/v1/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

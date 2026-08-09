@@ -1,0 +1,184 @@
+/* Shared stylesheet — Claude Code 源码架构课程 */
+/* 与 harness-engineering 课程共用同一套 Tufte 变量，保持视觉连续性 */
+
+:root {
+  --bg: #fffff8;
+  --text: #111;
+  --text-secondary: #555;
+  --accent: #c44;
+  --accent-2: #36c;
+  --border: #ddd;
+  --code-bg: #f8f8f4;
+  --highlight: #fffde7;
+  --ok: #2a7;
+  --warn: #b80;
+  --max-width: 1000px;
+  --font-body: "Georgia", "Songti SC", "SimSun", "Times New Roman", serif;
+  --font-mono: "Consolas", "Monaco", "Courier New", monospace;
+  --font-sans: "Helvetica Neue", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1a1a;
+    --text: #e8e8e8;
+    --text-secondary: #aaa;
+    --accent: #ff6b6b;
+    --accent-2: #7ab7ff;
+    --border: #444;
+    --code-bg: #242424;
+    --highlight: #2d2a00;
+    --ok: #4c9;
+    --warn: #da3;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  line-height: 1.75;
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 2rem 1.5rem 6rem;
+  font-size: 17px;
+}
+
+h1, h2, h3, h4 { font-family: var(--font-sans); font-weight: 700; line-height: 1.35; }
+h1 { font-size: 2.1rem; margin: 1.5rem 0 0.5rem; }
+h2 { font-size: 1.45rem; margin: 2.5rem 0 0.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+h3 { font-size: 1.12rem; margin: 1.75rem 0 0.5rem; }
+h4 { font-size: 1rem; margin: 1.25rem 0 0.4rem; color: var(--text-secondary); }
+
+p { margin: 0.85rem 0; }
+ul, ol { margin: 0.85rem 0 0.85rem 1.5rem; }
+li { margin: 0.35rem 0; }
+
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
+a:hover { border-bottom-color: var(--accent); }
+
+strong { font-weight: 700; }
+
+/* ── 课程页眉 ───────────────────────────────── */
+.lesson-meta {
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 0.25rem;
+}
+.lesson-sub {
+  font-family: var(--font-sans);
+  color: var(--text-secondary);
+  font-size: 1.02rem;
+  margin: 0.25rem 0 2rem;
+}
+
+/* ── 代码 ───────────────────────────────────── */
+code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--code-bg);
+  padding: 0.12em 0.35em;
+  border-radius: 3px;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-2);
+  border-radius: 4px;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  margin: 1rem 0;
+  font-size: 0.84rem;
+  line-height: 1.6;
+}
+pre code { background: none; padding: 0; font-size: inherit; }
+pre .cm { color: var(--text-secondary); font-style: italic; }   /* 注释 */
+pre .hl { background: var(--highlight); display: inline-block; width: 100%; }
+
+/* ── 引用源码的标注条 ─────────────────────── */
+.src-ref {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.25rem 0.6rem;
+  display: inline-block;
+  margin: 0.6rem 0 -0.4rem;
+}
+
+/* ── 各类提示框 ─────────────────────────────── */
+.box { border-radius: 4px; padding: 0.9rem 1.1rem; margin: 1.25rem 0; }
+.box > :first-child { margin-top: 0; }
+.box > :last-child { margin-bottom: 0; }
+.box .box-title {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 0.9rem;
+  margin-bottom: 0.4rem;
+  letter-spacing: 0.02em;
+}
+
+.box-why   { background: var(--highlight); border-left: 3px solid var(--warn); }
+.box-do    { background: var(--code-bg);   border-left: 3px solid var(--ok); }
+.box-real  { background: var(--code-bg);   border-left: 3px solid var(--accent-2); }
+.box-trap  { background: var(--code-bg);   border-left: 3px solid var(--accent); }
+
+/* ── 步骤列表 ───────────────────────────────── */
+.steps { list-style: none; margin: 1.25rem 0; counter-reset: s; }
+.steps li {
+  counter-increment: s;
+  position: relative;
+  padding-left: 2.4rem;
+  margin: 0.85rem 0;
+}
+.steps li::before {
+  content: counter(s, decimal-leading-zero);
+  position: absolute; left: 0; top: 0.05rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--bg);
+  background: var(--accent-2);
+  border-radius: 3px;
+  padding: 0.08rem 0.4rem;
+}
+
+/* ── 表格 ───────────────────────────────────── */
+table { border-collapse: collapse; width: 100%; margin: 1.25rem 0; font-size: 0.92rem; }
+th, td { border-bottom: 1px solid var(--border); padding: 0.5rem 0.6rem; text-align: left; vertical-align: top; }
+th { font-family: var(--font-sans); font-size: 0.85rem; color: var(--text-secondary); font-weight: 700; }
+.table-wrap { overflow-x: auto; }
+
+/* ── 页脚导航 ───────────────────────────────── */
+.footer-nav {
+  margin-top: 3.5rem;
+  padding-top: 1.25rem;
+  border-top: 2px solid var(--border);
+  font-family: var(--font-sans);
+  font-size: 0.92rem;
+}
+.ask-teacher {
+  background: var(--highlight);
+  border: 1px dashed var(--warn);
+  border-radius: 4px;
+  padding: 0.9rem 1.1rem;
+  margin: 2rem 0 1rem;
+  font-family: var(--font-sans);
+  font-size: 0.94rem;
+}
+
+/* ── 打印 ───────────────────────────────────── */
+@media print {
+  :root { --bg: #fff; --text: #000; --code-bg: #f4f4f4; --border: #bbb; }
+  body { font-size: 11pt; max-width: none; padding: 0; }
+  pre, .box, table, .quiz-q { break-inside: avoid; }
+  .quiz-hint, .ask-teacher { display: none; }
+  a { border-bottom: none; }
+  a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.75em; color: #666; }
+}
