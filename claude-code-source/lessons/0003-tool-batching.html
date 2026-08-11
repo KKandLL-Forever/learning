@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 0003 课 · 并发分批：相邻，而不是全部</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<p class="lesson-meta">第 0003 课 · Claude Code 源码架构</p>
+<h1>并发分批</h1>
+<p class="lesson-sub">模型一次要你跑五个工具。哪些能同时跑，哪些必须排队？答案只有一行 <code>if</code>，但那一行里藏着一个几乎所有人第一眼都会看错的字：<strong>相邻</strong>。</p>
+
+<div class="box box-do">
+  <p class="box-title">这节课结束时你会有</p>
+  <ul>
+    <li><code>mini-cc v2</code>：能分批调度的执行器，跑起来你会看到两个 600ms 的调用在 <strong>608ms</strong> 内一起完成</li>
+    <li>一个能自己推演的分批规则，以及它<strong>为什么不能贪心</strong></li>
+    <li>一个可以直接抄进自己项目的并发原语：带上限的生成器合流</li>
+  </ul>
+</div>
+
+<div class="box box-real">
+  <p class="box-title">开始之前 · Node 标准库</p>
+  <p>本课没有新增标准库，前两课的 <code>node:fs/promises</code> 和 <code>node:path</code> 继续用。</p>
+  <p style="margin-top:0.5rem">要留意的是一个 JavaScript 内建 API 的少见用法：<code>Promise.race</code> 配合一个会自我补充的 <code>Set</code>。你大概用过 <code>Promise.race</code> 做超时控制，本课用它做的是<strong>滑动窗口</strong>，正文第四节展开。</p>
+</div>
+
+<h2>问题长什么样</h2>
+
+<p>模型一次回复里可以要求调用多个工具。比如「看看这三个文件」，它会一口气发三个 <code>read_file</code>。这三个读操作互不影响，同时跑显然更快。</p>
+
+<p>但如果是「读 A、改 A、再读 A」呢？三个一起并行的话，第三次读可能在改完成之前就跑完，读到旧内容。</p>
+
+<p>所以需要一个规则，把一批调用切成若干组，组内并发、组间排队。真实源码里这个规则写在 188 行的 <code>toolOrchestration.ts</code> 里，是全课程最短的关键文件，适合完整精读。</p>
+
+<h2>规则：合并相邻的安全调用</h2>
+
+<p>很多人第一眼会以为这个算法是「把所有只读的挑出来一起跑」。<strong>不对。</strong>它只合并<strong>位置上相邻</strong>的安全调用，一旦碰到不安全的就断开，后面重新起一批。</p>
+
+<p>拿「读 A、改 A、再读 A」走一遍，逐行看它怎么决策：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:14%">扫描到</th><th style="width:10%">它安全吗</th><th style="width:26%">上一批是安全批吗</th><th style="width:14%">动作</th><th>当前批次列表</th></tr></thead>
+<tbody>
+<tr><td><code>Read A</code></td><td>是</td><td>没有上一批</td><td>新建批次</td><td><code>[Read A]</code></td></tr>
+<tr><td><code>Edit A</code></td><td>否</td><td>不安全的一律单独成批</td><td>新建批次</td><td><code>[Read A] [Edit A]</code></td></tr>
+<tr><td><code>Read A</code></td><td>是</td><td><strong>否</strong>，上一批是 Edit</td><td>新建批次</td><td><code>[Read A] [Edit A] [Read A]</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>第三行是全部关键。第三个 <code>Read A</code> 自己是安全的，可它前面那批是 <code>[Edit A]</code>，所以它<strong>跨不过去和第一批合并</strong>，只能另起一批。即使两者用的是同一个工具、读的是同一个文件。</p>
+
+<p>判断条件就写在 <code>reduce</code> 里，只看<strong>最后一个批次</strong>：</p>
+
+<p class="src-ref">src/services/tools/toolOrchestration.ts:109</p>
+<pre><code>if (isConcurrencySafe &amp;&amp; <span class="hl">acc[acc.length - 1]?.isConcurrencySafe</span>) {
+  acc[acc.length - 1]!.blocks.push(toolUse)          <span class="cm">// 并入上一批</span>
+} else {
+  acc.push({ isConcurrencySafe, blocks: [toolUse] }) <span class="cm">// 另起一批</span>
+}</code></pre>
+
+<p>高亮那半边就是「相邻」的全部含义。它只回头看一格，从不翻更早的批次。</p>
+
+<div class="box box-why">
+  <p class="box-title">为什么不贪心一点</p>
+  <p>你可能会想，扫一遍把所有只读的收集起来一起跑，剩下的排队，并行度不是更高吗？</p>
+  <p style="margin-top:0.5rem">那样会破坏因果。「读 A、改 A、再读 A」里的第三次读，语义上就是要读<em>改完之后</em>的内容，模型正是这么打算的。把它提前到 Edit 之前执行，拿到的是旧内容，而且这个错误<strong>不会报错</strong>，只会让模型基于过时信息继续推理。</p>
+  <p style="margin-top:0.5rem">调度器不知道模型的意图，它唯一能依靠的信息就是<strong>模型给出的顺序</strong>。所以规则保守到只敢合并相邻项。少赚一点并行度，换的是「顺序永远不会被悄悄改写」。</p>
+</div>
+
+<p>再看报告里那个混合例子，能同时体现合并和断开：</p>
+
+<pre><code>模型要求：Read A · Read B · Edit C · Read D · Read E
+
+分批结果：[Read A, Read B]   <span class="cm">← 相邻且都安全，合并，并行跑</span>
+          [Edit C]           <span class="cm">← 不安全，单独一批</span>
+          [Read D, Read E]   <span class="cm">← 合并，但要等 Edit C 跑完</span></code></pre>
+
+<p>5 个调用压成 3 批。并行度从 1 提到 2.5 倍，一个因果关系都没破坏。</p>
+
+<h2>另一半：批与批之间严格串行</h2>
+
+<p>分好批只解决了一半。另一半在 <code>runTools()</code>，它用一个普通的 <code>for...of</code> 遍历批次，每批内部 <code>for await</code> 消费到底才进入下一批。</p>
+
+<pre><code>[Read A, Read B]   ← 跑完，等它结束
+[Edit C]           ← 才开始，跑完，等它结束
+[Read D, Read E]   ← 才开始。此时 Edit 的写入已经落盘</code></pre>
+
+<p>并行只发生在<strong>批内</strong>，批与批之间永远是顺序的。因果顺序因此得到保证。</p>
+
+<h2>「安全」由谁说了算</h2>
+
+<p>判断依据是每个工具自己声明的 <code>isConcurrencySafe(input)</code>，也就是第 0002 课那个契约成员。注意它<strong>接收 input</strong>，因为同一个工具的安全性可以取决于具体调用。</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:24%">工具</th><th style="width:40%">声明</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td><code>FileReadTool</code> / <code>GrepTool</code></td><td><code>isConcurrencySafe() { return true }</code></td><td>恒安全</td></tr>
+<tr><td><code>BashTool</code></td><td><code>return this.isReadOnly?.(input) ?? false</code></td><td>按命令内容逐次判定，<code>ls</code> 安全，<code>rm x</code> 不安全</td></tr>
+<tr><td><code>FileEditTool</code></td><td>完全没声明</td><td>吃 <code>buildTool</code> 的默认值 <code>false</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>最后一行正是上一课 fail-closed 的真实落地。<code>FileEditTool</code> 的作者<strong>根本没写</strong>这个方法，系统默认它不安全。假如默认值反过来是 <code>true</code>，「读 A、改 A、再读 A」就会三个一起并行，产生一个只在时序不巧时才复现的数据竞争。</p>
+
+<div class="box box-trap">
+  <p class="box-title">取值处还包了第二层保险</p>
+  <p>光有默认值不够。取值这一步本身也可能出事，所以源码在这里又兜了一道：</p>
+  <pre style="margin-top:0.5rem"><code>const isConcurrencySafe = parsedInput?.success
+  ? (() =&gt; {
+      try { return Boolean(tool?.isConcurrencySafe(parsedInput.data)) }
+      <span class="hl">catch { return false }</span>   <span class="cm">// shell-quote 解析失败等 → 保守当作不安全</span>
+    })()
+  : <span class="hl">false</span>                     <span class="cm">// schema 没过 → 同样不安全</span></code></pre>
+  <p style="margin-top:0.5rem">两条路径都倒向 <code>false</code>。<strong>schema 解析失败</strong>（参数不合法，说明这次调用本来就有问题），以及 <strong><code>isConcurrencySafe</code> 自己抛异常</strong>。第二条的源码注释点名了真实场景，<code>BashTool</code> 判断只读性时要解析 shell 引号，解析炸了就会抛。</p>
+  <p style="margin-top:0.5rem">这里的推理值得单独记住：<em>「不知道安不安全」必须当成「不安全」，而不是当成「再想想办法猜一下」。</em></p>
+</div>
+
+<h2>批内并发：为什么不用 Promise.all</h2>
+
+<p>批内要同时跑 N 个工具，最顺手的写法是 <code>Promise.all</code>。真实源码没有这么做，用的是一个叫 <code>all()</code> 的自研工具函数。两个理由。</p>
+
+<p><strong>一，<code>Promise.all</code> 等的是最终结果，中途的东西全丢了。</strong>工具执行期间要往终端实时推进度（正在读第几个文件、Bash 输出到哪一行），这些是逐个 yield 出来的事件。<code>Promise.all</code> 只在全部结束时给你一个数组，中间的事件没有出口。</p>
+
+<p><strong>二，<code>Promise.all</code> 没有并发上限。</strong>模型一次要求 50 个工具调用，全冲出去会打爆文件句柄或者触发限流。真实源码的上限是 10，可以用 <code>CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY</code> 覆盖。</p>
+
+<p><code>all()</code> 同时解决这两件事，办法是把 <code>Promise.race</code> 当成滑动窗口用：</p>
+
+<p class="src-ref">src/utils/generators.ts:32 · 骨架</p>
+<pre><code><span class="cm">// 先启动一批，填满到上限为止</span>
+while (inflight.size &lt; concurrencyCap &amp;&amp; waiting.length &gt; 0) {
+  inflight.add(next(waiting.shift()!))
+}
+
+while (inflight.size &gt; 0) {
+  <span class="cm">// 谁先有动静就先处理谁，不等所有人</span>
+  const { done, value, generator, promise } = <span class="hl">await Promise.race(inflight)</span>
+  inflight.delete(promise)
+
+  if (!done) {
+    inflight.add(next(generator))   <span class="cm">// 还没完，继续向它要下一个</span>
+    if (value !== undefined) yield value
+  } else if (waiting.length &gt; 0) {
+    inflight.add(next(waiting.shift()!))  <span class="cm">// 跑完了，腾位置给排队的</span>
+  }
+}</code></pre>
+
+<p>关键在 <code>next()</code> 返回的对象里<strong>装着 promise 自己</strong>。race 出来之后可以精确地把这一个从 Set 里删掉，而不用去猜是哪个赢了。这个小技巧让整个池子的进出都是 O(1)。</p>
+
+<h2>动手：让并发变成一个可测量的数字</h2>
+
+<p><code>v2</code> 已经建好了。它比 v1 多了三个文件（<code>partition.ts</code>、<code>runTools.ts</code>、<code>concurrency.ts</code>），还多了一个 <code>sleep</code> 工具。</p>
+
+<pre><code>cd D:\code\learning\claude-code-source\mini-cc
+bun run src/v2/main.ts "并发演示"</code></pre>
+
+<p>加 <code>sleep</code> 是因为读本地文件太快了，一次几毫秒，并行和串行看不出差别。把时间轴拉长才能<strong>证明</strong>并发真的发生了。（真实源码里也有一个 <code>SleepTool</code>，用途是让模型主动等待外部状态就绪。）</p>
+
+<p>剧本让模型一次发出 <code>sleep A · sleep B · write · sleep D · sleep E</code>，每个 sleep 600ms。你会看到：</p>
+
+<pre><code>  分批方案（共 3 批）：
+  [1/3] <span class="hl">并发</span> sleep + sleep
+  [2/3] <span class="hl">串行</span> write_file
+  [3/3] <span class="hl">并发</span> sleep + sleep
+    ⚙ sleep 等待 600ms（A）
+    ⚙ sleep 等待 600ms（B）
+    → 等了 600ms，标签 A
+    → 等了 600ms，标签 B
+  第 1 批完成，<span class="hl">耗时 608ms</span>
+    ⚙ write_file 写入 scratch/note.md（27 字符）
+    → 已写入 …
+  第 2 批完成，耗时 2ms
+    ⚙ sleep 等待 600ms（D）
+    ⚙ sleep 等待 600ms（E）
+  第 3 批完成，<span class="hl">耗时 607ms</span></code></pre>
+
+<div class="box box-why">
+  <p class="box-title">608ms 就是证据</p>
+  <p>两个各需 600ms 的调用，一批跑完只花了 608ms。<strong>串行的话应该是 1200ms。</strong></p>
+  <p style="margin-top:0.5rem">同时注意第 3 批的 607ms 是在第 2 批结束<em>之后</em>才开始计的。整轮总耗时约 1200ms 而非 2400ms，省下的正好是被合并的那两批。</p>
+</div>
+
+<h3>三个实验</h3>
+
+<p><strong>实验 A · 验证「相邻」。</strong>打开 <code>src/v2/model.ts</code>，把剧本里 <code>write_file</code> 那一项挪到最后（放在两个 sleep D、E 后面）。重跑，分批方案会从 3 批变成 2 批，因为四个 sleep 现在连成一片了。把它挪回中间，又变回 3 批。</p>
+
+<p><strong>实验 B · 压并发上限。</strong>不改代码，直接：</p>
+
+<pre><code>MINI_CC_MAX_CONCURRENCY=1 bun run src/v2/main.ts</code></pre>
+
+<p>第 1 批的耗时会从 608ms 变成 1200ms 左右。分批方案<strong>没变</strong>，变的只是批内的实际并发度。这两件事是分开的，值得体会一下。</p>
+
+<p><strong>实验 C · 打破 fail-closed。</strong>打开 <code>src/v2/partition.ts</code>，把 <code>checkSafe</code> 里 <code>catch { return false }</code> 改成 <code>catch { return true }</code>，再让某个工具的 <code>isConcurrencySafe</code> 抛个异常。你会看到一个会写的工具被塞进并发批。改回来。</p>
+
+<h2>检验一下</h2>
+
+<div class="quiz" id="quiz"></div>
+
+<h2>这一课在整张地图的哪里</h2>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:14%">课</th><th style="width:34%">加什么</th><th>它挡住的具体失败</th></tr></thead>
+<tbody>
+<tr><td><strong>0001</strong> ✅</td><td>循环骨架 · 显式状态 · 终止原因</td><td>调用方分不清为什么停了</td></tr>
+<tr><td><strong>0002</strong> ✅</td><td>工具契约 · fail-closed 默认值</td><td>工具作者少写一行导致数据竞争</td></tr>
+<tr><td><strong>0003</strong> ✅</td><td>并发分批 · 带上限的合流</td><td>「读 A、改 A、再读 A」读到旧内容；50 个调用一起冲垮句柄</td></tr>
+<tr><td>0004</td><td>权限判定顺序</td><td>开了 bypass 就能改你的 <code>.git/config</code></td></tr>
+<tr><td>0005</td><td>结果预算</td><td>一次 <code>npm test</code> 的 800KB 日志吃光额度</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>注意 v2 改动最大的其实是 <code>loop.ts</code>，它<strong>变短了</strong>。那段挨个跑工具的 <code>for</code> 循环整个搬进了 <code>runTools.ts</code>，循环里只剩一行 <code>yield* runTools(...)</code>。循环从此不知道谁能并发，那是调度器的事。</p>
+
+<h2>读一份一手资料</h2>
+
+<div class="box box-do">
+  <p class="box-title">本课推荐（15 分钟）</p>
+  <p><strong>首选 · <a href="../../../claude-code-source/src/services/tools/toolOrchestration.ts">src/services/tools/toolOrchestration.ts</a></strong>（188 行）<br>
+  这是整个课程里最值得<strong>完整读完</strong>的一个文件，短到可以一口气看完，而且分批、串行、并发、上限四件事全在里面。重点看 <code>:91</code> 的 <code>partitionToolCalls</code> 和 <code>:19</code> 的 <code>runTools</code> 怎么配合。</p>
+  <p style="margin-top:0.6rem"><strong>配套 · <a href="../../../claude-code-source/src/utils/generators.ts">src/utils/generators.ts:32</a></strong><br>
+  <code>all()</code> 的完整实现，40 行。读懂它你就有了一个可以直接抄进自己项目的并发原语。</p>
+</div>
+
+<div class="ask-teacher">
+  <strong>💬 有不清楚的地方，直接问我。</strong>比如：
+  <ul style="margin-bottom:0">
+    <li><code>all()</code> 里那个「promise 装着自己」的写法为什么必要，我可以画一遍执行过程</li>
+    <li>并发批里的 <code>contextModifier</code> 为什么要排队到整批结束才应用（源码里一个容易忽略的细节）</li>
+    <li>想给自己的项目搬这套调度，我们可以一起改</li>
+    <li>难度不合适就说一声</li>
+  </ul>
+</div>
+
+<div class="footer-nav">
+  <p><strong>相关：</strong>
+    <a href="0002-tool-contract.html">← 第 0002 课：工具契约</a> ·
+    <a href="../reference/glossary.html">速查 · 架构术语表</a> ·
+    <a href="../index.html">课程总览</a> ·
+    <a href="../../../claude-code-source/docs/architecture-report.html">架构报告全文</a>
+  </p>
+  <p style="color:var(--text-secondary);font-size:0.88rem;margin-top:0.75rem">
+    下一课 · <strong>权限判定顺序</strong>。到目前为止 <code>mini-cc</code> 的工具是无条件执行的，模型说读就读、说写就写。真实系统在 <code>call()</code> 之前还夹着 10 个检查点，而那 10 步的<em>先后次序本身</em>就是安全语义。
+  </p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+<script>
+Quiz.render('#quiz', [
+  {
+    q: '模型要求「读 A、改 A、再读 A」，分批的结果是什么？',
+    options: [
+      '两批，两个读操作会合并',
+      '三批，第三个读另起一批',
+      '一批，同一文件无需拆开',
+    ],
+    answer: 1,
+    explain: '算法只合并<strong>位置上相邻</strong>的安全调用。第三个读自己是安全的，但它前面那批是 <code>[Edit A]</code>，<code>acc[acc.length - 1]?.isConcurrencySafe</code> 为假，于是另起一批。它跨不过中间那个写操作去和第一批合并，即使用的是同一个工具、同一个文件。',
+  },
+  {
+    q: '批与批之间为什么必须严格串行？',
+    options: [
+      '为了避免并发数超过上限',
+      '为了保证写入的因果顺序',
+      '为了让进度事件顺序输出',
+    ],
+    answer: 1,
+    explain: '批内并发、批间串行，保证的是「上一批的副作用全部落地之后，下一批才开始」。所以 <code>Edit C</code> 之后的读一定看得到新内容。并发上限是另一回事，由 <code>all()</code> 的 <code>concurrencyCap</code> 单独管，改上限不会改变分批方案。你可以用 <code>MINI_CC_MAX_CONCURRENCY=1</code> 亲自验证这两者是分开的。',
+  },
+  {
+    q: '取 <code>isConcurrencySafe(input)</code> 时它自己抛了异常，源码怎么处理？',
+    options: [
+      '向上抛出让调用方处理',
+      '捕获并当作不安全处理',
+      '捕获并回退到只读判断',
+    ],
+    answer: 1,
+    explain: '源码注释点名了真实场景，<code>BashTool</code> 判断只读性要解析 shell 引号，解析炸了就会抛。这时「不知道安不安全」必须当成「不安全」。选项 C 看着聪明，其实不成立，<code>BashTool</code> 的 <code>isConcurrencySafe</code> 本来就是转交给 <code>isReadOnly</code> 的，同一个解析同样会炸。schema 校验没过时也走同一个方向，一律 <code>false</code>。',
+  },
+  {
+    recall: true,
+    q: '不看上文，用自己的话写下来：批内并发为什么不用 <code>Promise.all</code>，而要自己写一个 <code>all()</code>？',
+    reveal: '<strong>两个理由，写出一个算及格，两个都写出来说明你读懂了。</strong><br>① <strong>进度事件会丢。</strong><code>Promise.all</code> 等的是最终结果，只在全部结束时给一个数组。而工具执行期间要往终端实时推进度，那些是逐个 yield 出来的事件，<code>Promise.all</code> 没有出口交付它们。所以合的必须是<strong>生成器</strong>而非 promise。<br>② <strong>没有并发上限。</strong>模型一次要求 50 个调用会全冲出去，打爆文件句柄或触发限流。<code>all()</code> 用 <code>Promise.race</code> 维持一个固定大小的窗口，跑完一个补一个。<br><strong>顺带一个实现细节：</strong>每次 <code>next()</code> 返回的对象里装着 promise 自己，race 出来后可以精确地从 Set 里删掉这一个，池子进出都是 O(1)。',
+  },
+])
+</script>
+
+</body>
+</html>
