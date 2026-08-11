@@ -21,6 +21,26 @@
   </ul>
 </div>
 
+<div class="box box-real">
+  <p class="box-title">开始之前 · 这一课新增的 Node 标准库</p>
+  <p>上一课的 <code>readFile</code>、<code>readdir</code>、<code>stat</code>、<code>join</code>、<code>resolve</code>、<code>isAbsolute</code> 继续用，不再重复。本课的 <code>write_file</code> 是第一个会写盘的工具，多带来三个函数。</p>
+
+  <div class="table-wrap">
+  <table>
+  <thead><tr><th style="width:20%">来自</th><th style="width:16%">函数</th><th>做什么</th></tr></thead>
+  <tbody>
+  <tr><td rowspan="2"><code>node:fs/promises</code></td>
+      <td><code>writeFile</code></td><td>写整个文件。目标已存在时<strong>覆盖</strong>原内容，想追加得改用 <code>appendFile</code></td></tr>
+  <tr><td><code>mkdir</code></td><td>建目录。带 <code>recursive: true</code> 时把中间层一起建出来，且目录已存在也不报错，相当于 <code>mkdir -p</code></td></tr>
+  <tr><td><code>node:path</code></td>
+      <td><code>dirname</code></td><td>取路径的父目录，如 <code>dirname('a/b/c.md')</code> 得到 <code>'a/b'</code></td></tr>
+  </tbody>
+  </table>
+  </div>
+
+  <p>这三个是配套用的。<code>write_file</code> 的 <code>call()</code> 里先 <code>mkdir(dirname(full), { recursive: true })</code> 再写，保证目标目录一定存在，不然写一个还没建过的子目录会直接报错。</p>
+</div>
+
 <h2>先问对问题</h2>
 
 <p>你在 v0 里写的 <code>Tool</code> 是这样的：</p>
@@ -99,6 +119,58 @@
   return this.isReadOnly?.(input) ?? false   <span class="cm">// ls 安全，rm x 不安全</span>
 }</code></pre>
   <p style="margin-top:0.5rem">注意 <code>isConcurrencySafe</code> <strong>接收 input</strong>，同一个工具的安全性可以取决于具体调用。这是接口设计里一个容易被抄错的细节。</p>
+</div>
+
+<h3>为什么非得有 buildTool</h3>
+
+<p>先澄清一个容易对错号的说法。<code>buildTool</code> 广义上算工厂函数，可它并不是设计模式里那个「工厂模式」。工厂模式的核心是多态派发，调用方给一个类型标识，工厂决定实例化哪个具体类，返回值的真实类型对调用方是藏起来的。<code>buildTool</code> 一个分支都没有，你传什么它就返回什么，只把缺的字段补齐。要给它安个名字，「带默认值的规范化构造器」更贴切。</p>
+
+<p>它真正挡住了什么，反过来想才看得清。假设不用它，还有两条路可走。</p>
+
+<p><strong>路一，把 47 个成员全设成必填。</strong>每写一个工具都要回答 47 个问题，没人受得了。直接出局。</p>
+
+<p><strong>路二，在接口里把它们设成可选。</strong>这条看着可行，也是真正危险的那条。成员一旦可选，默认值就跑到了每个消费者的读取处。</p>
+
+<pre><code><span class="cm">// 调度器里</span>
+const safe = tool.isConcurrencySafe?.(input) ?? false
+<span class="cm">// 权限系统里</span>
+const ro   = tool.isReadOnly?.(input) ?? false
+<span class="cm">// UI 里、预算裁剪器里、分类器里……</span></code></pre>
+
+<div class="box box-trap">
+  <p class="box-title">路二为什么危险</p>
+  <p>同一个默认值散落在五种消费者的几十个读取点上。只要有一个人手滑写成 <code>?? true</code>，前面那个数据竞争就回来了。而这一次连 <code>FileEditTool</code> 的作者都是无辜的，他什么都没做错。</p>
+  <p style="margin-top:0.5rem">fail-closed 要真的生效，得有一个物理上唯一的落点。<code>buildTool</code> 就是这个落点。默认值只存在于 <code>TOOL_DEFAULTS</code> 那一处，出了这个函数，所有工具都是完整对象。源码注释把动机写得很直白：</p>
+  <p style="margin-top:0.5rem"><em>All tool exports should go through this so that defaults live in one place and <strong>callers never need <code>?.() ?? default</code></strong>.</em>（<code>Tool.ts:743</code>）</p>
+</div>
+
+<p>所以它的价值落在「给 fail-closed 一个唯一收口」上，跟造对象本身关系不大。</p>
+
+<h4>为什么必须是函数，而不是一句团队约定</h4>
+
+<p>如果只是补默认值，约定大家都写 <code>{ ...TOOL_DEFAULTS, ...myTool }</code> 似乎也够用。它非得做成函数，理由在类型那一半。</p>
+
+<p class="src-ref">src/Tool.ts:735</p>
+<pre><code>type BuiltTool&lt;D&gt; = Omit&lt;D, DefaultableToolKeys&gt; &amp; {
+  [K in DefaultableToolKeys]<span class="hl">-?</span>: K extends keyof D
+    ? undefined extends D[K] ? ToolDefaults[K] : D[K]
+    : ToolDefaults[K]
+}</code></pre>
+
+<p>这个映射类型在类型层面镜像了运行时的展开。注意那个 <code>-?</code>，它把七个可默认成员全部变成必填。下游拿到的 <code>Tool</code> 因此没有一个可选的安全成员，也就没有理由写 <code>?.</code>。<strong>类型系统直接把路二掐掉了。</strong></p>
+
+<p>源码注释里还留了条线索，说明这套写法是迁移来的：</p>
+
+<p class="src-ref">src/Tool.ts:733</p>
+<pre><code>preserving arity, optional presence, and literal types
+exactly <span class="hl">as `satisfies Tool` did</span>.</code></pre>
+
+<p>他们原先用的是 <code>satisfies Tool</code>。<code>satisfies</code> 能校验形状又保留字面量类型，可它不会帮你填默认值，消费端还是得写 <code>?.() ?? false</code>。换成 <code>buildTool</code> 是为了拿到填充能力，而那个映射类型的活儿，就是保证换的过程里别把 <code>satisfies</code> 原有的类型精度弄丢。</p>
+
+<div class="box box-why">
+  <p class="box-title">对照：mini-cc 里真正的工厂函数</p>
+  <p><code>createMockModel</code> 和 <code>createDeepSeekModel</code> 才是标准的工厂函数。它们<strong>封装了内部状态</strong>（<code>turn</code> 计数、<code>client</code> 实例），返回一个满足 <code>ModelAdapter</code> 接口的实例，调用方看不见里面。<code>pickModel()</code> 再进一步，根据环境变量决定造哪一个，那个才带上了工厂模式的派发味道。</p>
+  <p style="margin-top:0.5rem"><code>buildTool</code> 什么都没封装，输入输出都是明明白白的普通对象，是个纯变换。这个差别值得留意，因为它决定了要不要给它写测试替身：工厂函数常常需要，纯变换函数不需要。</p>
 </div>
 
 <h3>buildTool 的展开顺序有讲究</h3>
