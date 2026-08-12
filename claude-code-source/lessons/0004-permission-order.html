@@ -51,8 +51,8 @@
 
 <p>把权限判定想成<strong>一条走廊，里面串着 10 道关卡</strong>。每次工具调用都得从头走一遍，从第一道往后走：</p>
 
-<pre><code>  ↓ 1a 整工具被禁用了吗？        没有 → 继续往下
-  ↓ 1b 规则要求每次都问吗？      没有 → 继续往下
+<pre><code>  ↓ 1a 这个工具整个被禁了吗？    没有 → 继续往下
+  ↓ 1b 这个工具每次都要问吗？    没有 → 继续往下
   ↓ 1c 问问工具自己怎么看
   ↓ 1d 工具说拒绝吗？            没有 → 继续往下
   ↓ 1e 工具要求必须人工确认吗？  没有 → 继续往下
@@ -60,8 +60,8 @@
   ↓ 1g 碰到敏感路径了吗？        没有 → 继续往下
   ─────────── 以上全是「拦住」的理由 ───────────
   ↓ 2a 用户开了全放行吗？        开了 → 【停】allow
-  ↓ 2b 有放行规则吗？
-  ↓ 3  什么都没命中             → 【停】ask</code></pre>
+  ↓ 2b 有放行规则吗？            没有 → 继续往下
+  ↓ 3  什么都没命中              　　　→ 【停】ask</code></pre>
 
 <p><strong>规则只有一条：第一个拦住你的关卡说了算。</strong>一旦某道关卡给出结论，函数当场 <code>return</code>，<em>后面的关卡根本不会执行</em>。</p>
 
@@ -123,6 +123,49 @@ export type PermissionResult = PermissionDecision | { behavior: 'passthrough'; �
 
 <p>顺带一个精确的事实：用户可见的模式确实是 5 种（源码里叫 <code>EXTERNAL_PERMISSION_MODES</code>），但类型里还藏着两个内部模式 <code>auto</code> 和 <code>bubble</code>。<code>auto</code> 就是「让 AI 批准 AI」那个模式，要 <code>TRANSCRIPT_CLASSIFIER</code> 这个 feature flag 才会进入可选列表。<strong>而这份反编译仓库里 <code>feature()</code> 恒为 <code>false</code>，所以它在这里根本用不了</strong>。</p>
 
+<h3>还有一对：工具级规则和内容级规则</h3>
+
+<p>十步表里 1a、1b、2b 写的是「工具级规则」，1f 写的是「内容级规则」。这两个词指的是<strong>规则管得多宽</strong>。</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:26%">你在配置里写</th><th style="width:18%">叫法</th><th>管什么</th></tr></thead>
+<tbody>
+<tr><td><code>"deny": ["Bash"]</code></td><td><strong>工具级</strong></td><td>Bash 的<strong>所有</strong>调用，不看参数</td></tr>
+<tr><td><code>"ask": ["Bash(npm publish:*)"]</code></td><td><strong>内容级</strong></td><td>只管跑 <code>npm publish</code> 那次，其它 Bash 命令照常</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>数据结构上就差一个字段：</p>
+
+<p class="src-ref">src/types/permissions.ts:67</p>
+<pre><code>export type PermissionRuleValue = {
+  toolName: string
+  <span class="hl">ruleContent?: string</span>   <span class="cm">// 没有它 = 工具级，有它 = 内容级</span>
+}</code></pre>
+
+<p>匹配函数一上来就靠它筛：</p>
+
+<p class="src-ref">src/utils/permissions/permissions.ts:242</p>
+<pre><code>function toolMatchesRule(tool, rule): boolean {
+  <span class="cm">// Rule must not have content to match the entire tool</span>
+  if (rule.ruleValue.ruleContent !== undefined) {
+    return false
+  }
+  ...</code></pre>
+
+<p>上面那句注释是源码原文，紧邻它还有一句说得更直白：<em>「this matches "Bash" but not "Bash(prefix:*)" for BashTool」</em>（<code>:235</code>）。</p>
+
+<div class="box box-why">
+  <p class="box-title">这解释了 1f 为什么必须单独存在</p>
+  <p>既然 1a、1b 只认工具级规则，那内容级规则在哪儿生效？答案在走廊后半段，而且理由很实在：<strong>两者的判断难度完全不同。</strong></p>
+  <p style="margin-top:0.5rem">工具级规则只要比对名字，权限系统自己就能做，所以放在最前面，一步到位。<br>
+  内容级规则得<em>看懂这次调用的内容</em>。<code>Bash(npm publish:*)</code> 要解析 shell 命令、处理引号、判断前缀，这活儿只有 <code>BashTool</code> 自己干得了。</p>
+  <p style="margin-top:0.5rem">所以流程只能是：先问工具（1c），拿到工具的判断，再裁决（1f）。<strong>1f 不是 1b 的重复，它是「等工具算完之后」的那一次裁决。</strong></p>
+  <p style="margin-top:0.5rem">顺带一提，「解析 shell 命令会炸」这件事你在<a href="0003-tool-batching.html">第 0003 课</a>已经见过一次，就是 <code>isConcurrencySafe</code> 抛异常要当作不安全的那个场景。同一个根源。</p>
+</div>
+
 <div class="box box-why">
   <p class="box-title">理解顺序的钥匙</p>
   <p>越是<strong>用户明确表达过的意图</strong>和<strong>不可挽回的破坏</strong>，越要排在前面。<br>
@@ -138,15 +181,15 @@ export type PermissionResult = PermissionDecision | { behavior: 'passthrough'; �
 <table>
 <thead><tr><th style="width:6%">步</th><th style="width:26%">检查</th><th style="width:10%">结果</th><th>为何在这个位置</th></tr></thead>
 <tbody>
-<tr><td><strong>1a</strong></td><td>整工具 deny 规则</td><td>deny</td><td>最高优先级，任何模式都拦</td></tr>
-<tr><td><strong>1b</strong></td><td>整工具 ask 规则</td><td>ask</td><td>例外：sandbox 能自动放行的 Bash 命令可以穿过</td></tr>
+<tr><td><strong>1a</strong></td><td>工具级 deny 规则</td><td>deny</td><td>最高优先级，任何模式都拦</td></tr>
+<tr><td><strong>1b</strong></td><td>工具级 ask 规则</td><td>ask</td><td>例外：sandbox 能自动放行的 Bash 命令可以穿过</td></tr>
 <tr><td><strong>1c</strong></td><td><code>tool.checkPermissions()</code></td><td>—</td><td>工具专属逻辑。schema 解析失败则<strong>保持 passthrough</strong></td></tr>
 <tr><td><strong>1d</strong></td><td>工具自身 deny</td><td>deny</td><td>工具比通用规则更懂自己在干什么</td></tr>
 <tr><td><strong>1e</strong></td><td><code>requiresUserInteraction()</code></td><td>ask</td><td>bypass 模式下也必须问</td></tr>
 <tr><td><strong>1f</strong></td><td>内容级 ask 规则</td><td>ask</td><td>用户显式配的 <code>Bash(npm publish:*)</code> 优先于 bypass</td></tr>
 <tr><td><strong>1g</strong></td><td>安全检查（<code>.git/</code> <code>.claude/</code> <code>.vscode/</code> shell 配置）</td><td>ask</td><td><strong>bypass 免疫</strong>，最后一道不可绕过的闸</td></tr>
 <tr style="border-top:2px solid var(--accent)"><td><strong>2a</strong></td><td>bypassPermissions 模式</td><td>allow</td><td>必须在 1d–1g 之后，否则前面全白设</td></tr>
-<tr><td><strong>2b</strong></td><td>整工具 allow 规则</td><td>allow</td><td>—</td></tr>
+<tr><td><strong>2b</strong></td><td>工具级 allow 规则</td><td>allow</td><td>—</td></tr>
 <tr><td><strong>3</strong></td><td>passthrough → ask</td><td>ask</td><td>默认落到「问用户」，保守</td></tr>
 </tbody>
 </table>
@@ -172,8 +215,8 @@ bun run src/v3/main.ts --trace</code></pre>
 
 <p><strong>场景一，写一个普通文件：</strong></p>
 
-<pre><code>  ✓ 1a 整工具 deny 规则           没配这条规则，继续往下
-  ✓ 1b 整工具 ask 规则            没配这条规则，继续往下
+<pre><code>  ✓ 1a 工具级 deny 规则           没配这条规则，继续往下
+  ✓ 1b 工具级 ask 规则            没配这条规则，继续往下
   ✓ 1c 问工具自己                 工具的意见是 passthrough，继续往下
   ✓ 1d 工具自身 deny              工具没有拒绝，继续往下
   ✓ 1e requiresUserInteraction    工具没有这个要求，继续往下
@@ -187,8 +230,8 @@ bun run src/v3/main.ts --trace</code></pre>
 
 <p><strong>场景二，改成写 <code>.git/config</code>：</strong></p>
 
-<pre><code>  ✓ 1a 整工具 deny 规则           没配这条规则，继续往下
-  ✓ 1b 整工具 ask 规则            没配这条规则，继续往下
+<pre><code>  ✓ 1a 工具级 deny 规则           没配这条规则，继续往下
+  ✓ 1b 工具级 ask 规则            没配这条规则，继续往下
   ✓ 1c 问工具自己                 工具的意见是 ask，继续往下
   ✓ 1d 工具自身 deny              工具没有拒绝，继续往下
   ✓ 1e requiresUserInteraction    工具没有这个要求，继续往下

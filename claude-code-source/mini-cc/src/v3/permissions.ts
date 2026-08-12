@@ -99,27 +99,27 @@ async function canUseToolInner(
   const pass = (step: string, why: string) => trace?.push(`PASS|${step}|${why}`)
   const stop = (step: string, why: string) => trace?.push(`STOP|${step}|${why}`)
 
-  // 1a. 整工具 deny 规则。最高优先级，任何模式都拦。
+  // 1a. 工具级 deny 规则。最高优先级，任何模式都拦。
   if (rules.deny.includes(tool.name)) {
-    stop('1a 整工具 deny 规则', `规则禁用了 ${tool.name}`)
+    stop('1a 工具级 deny 规则', `规则禁用了 ${tool.name}`)
     return {
       behavior: 'deny',
-      decidedAt: '1a 整工具 deny 规则',
+      decidedAt: '1a 工具级 deny 规则',
       message: `${tool.name} 已被规则禁用。`,
     }
   }
-  pass('1a 整工具 deny 规则', '没配这条规则')
+  pass('1a 工具级 deny 规则', '没配这条规则')
 
-  // 1b. 整工具 ask 规则。
+  // 1b. 工具级 ask 规则。
   if (rules.ask.includes(tool.name)) {
-    stop('1b 整工具 ask 规则', `规则要求每次用 ${tool.name} 都问`)
+    stop('1b 工具级 ask 规则', `规则要求每次用 ${tool.name} 都问`)
     return {
       behavior: 'ask',
-      decidedAt: '1b 整工具 ask 规则',
+      decidedAt: '1b 工具级 ask 规则',
       message: `规则要求每次使用 ${tool.name} 都确认。`,
     }
   }
-  pass('1b 整工具 ask 规则', '没配这条规则')
+  pass('1b 工具级 ask 规则', '没配这条规则')
 
   // 1c. 问工具自己。默认 passthrough，交给通用系统裁决。
   //     真实源码这里包了 try/catch：schema 解析失败就【保持 passthrough】，
@@ -180,10 +180,10 @@ async function canUseToolInner(
   }
   pass('2a bypassPermissions 模式', `当前是 ${mode} 模式，不是全放行`)
 
-  // 2b. 整工具 allow 规则。
+  // 2b. 工具级 allow 规则。
   if (rules.allow.includes(tool.name)) {
-    stop('2b 整工具 allow 规则', `规则放行了 ${tool.name}`)
-    return { behavior: 'allow', decidedAt: '2b 整工具 allow 规则' }
+    stop('2b 工具级 allow 规则', `规则放行了 ${tool.name}`)
+    return { behavior: 'allow', decidedAt: '2b 工具级 allow 规则' }
   }
 
   // 只读工具放行。读操作可逆、无副作用，没有理由每次都问。

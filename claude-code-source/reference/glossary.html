@@ -198,6 +198,12 @@
 <dd>权限判定按<strong>严格顺序</strong>走 10 个检查点，先返回的那个赢。<em>顺序本身就是安全语义</em>：越是「用户明确表达过的意图」和「不可挽回的破坏」越靠前，越是「图省事的全局开关」越靠后。
 <span class="where">src/utils/permissions/permissions.ts:1158</span></dd>
 
+<dt>工具级规则 / 内容级规则<span class="en">entire tool vs content-specific</span><span class="ch">12</span></dt>
+<dd>权限规则按<strong>管得多宽</strong>分两种。<code>"deny": ["Bash"]</code> 是<strong>工具级</strong>，管这个工具的所有调用；<code>"ask": ["Bash(npm publish:*)"]</code> 是<strong>内容级</strong>，只管匹配该模式的调用。
+数据结构上就差 <code>PermissionRuleValue.ruleContent</code> 有没有值，匹配函数一上来就用它筛掉带括号的那种。
+<strong>两者判断难度不同，所以在判定链上分居两处</strong>：工具级只需比对名字（1a/1b/2b），内容级要看懂调用内容（解析 shell 命令这类活儿只有工具自己干得了），必须先问工具（1c）再裁决（1f）。
+<span class="where">src/types/permissions.ts:67 · permissions.ts:242</span></dd>
+
 <dt>passthrough<span class="en">我不表态</span><span class="ch">12</span></dt>
 <dd>权限判定的第四种结果，含义是「这一层没有意见，交给后面的通用规则」。
 <strong>它和 allow 的区别很关键</strong>：工具的 <code>checkPermissions</code> 抛异常时保持 passthrough，既不放行也不拒绝，之后 1f、1g 照常检查，最后第 3 步落到 ask。
