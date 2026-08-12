@@ -198,6 +198,16 @@
 <dd>权限判定按<strong>严格顺序</strong>走 10 个检查点，先返回的那个赢。<em>顺序本身就是安全语义</em>：越是「用户明确表达过的意图」和「不可挽回的破坏」越靠前，越是「图省事的全局开关」越靠后。
 <span class="where">src/utils/permissions/permissions.ts:1158</span></dd>
 
+<dt>passthrough<span class="en">我不表态</span><span class="ch">12</span></dt>
+<dd>权限判定的第四种结果，含义是「这一层没有意见，交给后面的通用规则」。
+<strong>它和 allow 的区别很关键</strong>：工具的 <code>checkPermissions</code> 抛异常时保持 passthrough，既不放行也不拒绝，之后 1f、1g 照常检查，最后第 3 步落到 ask。
+fail-closed 的落点因此可以是「交给下一层」，不一定是「当场拒绝」，看的是<strong>整条链路的终点</strong>是否保守。</dd>
+
+<dt>checkRuleBasedPermissions()<span class="en">顺序即规格</span><span class="ch">12</span></dt>
+<dd>另一个权限函数，它的文档注释把自己定义成「<em>everything that fires before step 2a</em>」，也就是「第 2a 步之前的全部步骤」。
+顺序如果只是随手排的，这个定义根本写不出来。步骤编号在这里是可被引用的契约，不是注释。
+<span class="where">src/utils/permissions/permissions.ts:1062</span></dd>
+
 <dt>bypass 免疫<span class="en">步骤 1g</span><span class="ch">12 · 14</span></dt>
 <dd>对 <code>.git/</code>、<code>.claude/</code>、<code>.vscode/</code>、shell 配置文件的 safetyCheck 排在 bypassPermissions 模式<strong>之前</strong>，所以它赢。用户开「全放行」的本意是「常规操作别烦我」，不是「允许你改我的 git 配置」。这是最后一道不可绕过的闸。</dd>
 

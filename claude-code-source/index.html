@@ -94,11 +94,12 @@
     <span class="pill">可学</span>
   </li>
   <li>
-    <span class="num todo">04</span>
+    <span class="num">04</span>
     <span class="body">
-      <span class="title todo-title">权限判定顺序</span>
-      <span class="desc">10 步固定顺序，<em>位置本身就是安全语义</em>。为什么 bypass 模式排在第 7 位而不是第 1 位。</span>
+      <a class="title" href="lessons/0004-permission-order.html">权限判定顺序</a>
+      <span class="desc">10 步固定顺序，<em>位置本身就是安全语义</em>。把一段代码往下挪 15 行，全放行模式就能改你的 <code>.git/config</code>。</span>
     </span>
+    <span class="pill">可学</span>
   </li>
   <li>
     <span class="num todo">05</span>
@@ -147,7 +148,8 @@
 bun install
 bun run src/v0/main.ts "看看 src/v0 里有什么"   <span style="color:var(--text-secondary)"># 第 0001 课</span>
 bun run src/v1/main.ts "看看 src/v1 里有什么"   <span style="color:var(--text-secondary)"># 第 0002 课</span>
-bun run src/v2/main.ts "并发演示"              <span style="color:var(--text-secondary)"># 第 0003 课</span></code></pre>
+bun run src/v2/main.ts "并发演示"              <span style="color:var(--text-secondary)"># 第 0003 课</span>
+bun run src/v3/main.ts --matrix                <span style="color:var(--text-secondary)"># 第 0004 课</span></code></pre>
 
 <p>没有 <code>DEEPSEEK_API_KEY</code> 也能跑，会自动切到离线剧本模式。</p>
 
@@ -155,7 +157,8 @@ bun run src/v2/main.ts "并发演示"              <span style="color:var(--text
   <p><strong>学习记录：</strong>
     <a href="learning-records/0001-loop-shape-vs-loop-plumbing.md">0001 · 循环的形状不难，难的是循环的管道</a><br>
     <a href="learning-records/0002-fail-closed-needs-asymmetry.md">0002 · fail-closed 不是「默认值都往保守写」</a><br>
-    <a href="learning-records/0003-adjacency-beats-greed.md">0003 · 调度器不敢贪心，因为它读不懂意图</a>
+    <a href="learning-records/0003-adjacency-beats-greed.md">0003 · 调度器不敢贪心，因为它读不懂意图</a><br>
+    <a href="learning-records/0004-order-is-the-policy.md">0004 · 顺序就是策略本身</a>
   </p>
 </div>
 
