@@ -15,9 +15,9 @@
 <div class="box box-do">
   <p class="box-title">这节课结束时你会有</p>
   <ul>
-    <li><code>mini-cc v3</code>：能打印一张<strong>判定矩阵</strong>，每格标出「结果 ← 由哪一步决定」</li>
+    <li><code>mini-cc v3</code>：能把一次权限判定<strong>一步步走给你看</strong>（<code>--trace</code>），也能打出全局结论表（<code>--matrix</code>）</li>
     <li>一个亲手做出来的安全漏洞：把一段代码往下挪 15 行，<code>bypassPermissions</code> 就能改你的 <code>.git/config</code></li>
-    <li>一条能用在任何权限系统上的排序原则</li>
+    <li>一条能用在任何权限系统上的排序原则，外加一个替代记忆的画面：<strong>走廊与通行证</strong></li>
   </ul>
 </div>
 
@@ -47,7 +47,81 @@
 
 <p>三条规则，三个答案。谁说了算？</p>
 
-<p><strong>由检查顺序决定。</strong>函数一路往下走，第一个 <code>return</code> 的那个赢，后面的根本没机会执行。所以这里每一步的位置都是刻意排的。</p>
+<h3>先建立一个画面：一条走廊</h3>
+
+<p>把权限判定想成<strong>一条走廊，里面串着 10 道关卡</strong>。每次工具调用都得从头走一遍，从第一道往后走：</p>
+
+<pre><code>  ↓ 1a 整工具被禁用了吗？        没有 → 继续往下
+  ↓ 1b 规则要求每次都问吗？      没有 → 继续往下
+  ↓ 1c 问问工具自己怎么看
+  ↓ 1d 工具说拒绝吗？            没有 → 继续往下
+  ↓ 1e 工具要求必须人工确认吗？  没有 → 继续往下
+  ↓ 1f 用户配过要问这类调用吗？  没有 → 继续往下
+  ↓ 1g 碰到敏感路径了吗？        没有 → 继续往下
+  ─────────── 以上全是「拦住」的理由 ───────────
+  ↓ 2a 用户开了全放行吗？        开了 → 【停】allow
+  ↓ 2b 有放行规则吗？
+  ↓ 3  什么都没命中             → 【停】ask</code></pre>
+
+<p><strong>规则只有一条：第一个拦住你的关卡说了算。</strong>一旦某道关卡给出结论，函数当场 <code>return</code>，<em>后面的关卡根本不会执行</em>。</p>
+
+<p>那个「模式」（<code>default</code>、<code>bypassPermissions</code> 之类）不是一道关卡，它是<strong>你手里的通行证</strong>。通行证只在走到 2a、2b 那两道关卡时才会被检查。所以问题变成了一个非常具体的问题：</p>
+
+<p style="text-align:center;font-size:1.05rem"><strong>你能不能<em>走到</em>检查通行证的那道关卡？</strong></p>
+
+<p>走得到，通行证生效；走不到，通行证再高级也没用。这就是整节课的全部内容。</p>
+
+<h3>两个容易混的东西：模式和结果</h3>
+
+<p>下面会反复出现 <code>default</code>、<code>ask</code> 这些词，它们属于两个不同的轴。先分清楚，后面看什么都顺。</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:24%"></th><th style="width:14%">是什么</th><th>取值</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>模式</strong>　<span style="color:var(--text-secondary)">通行证</span></td>
+  <td><strong>输入</strong><br><span style="font-size:0.85em;color:var(--text-secondary)">你设的</span></td>
+  <td><code>default</code>　<code>acceptEdits</code>　<code>bypassPermissions</code>　<code>dontAsk</code>　<code>plan</code><br>
+  <span style="font-size:0.88em;color:var(--text-secondary)">来自 <code>settings.json</code>、命令行参数，或者会话里临时切换</span></td>
+</tr>
+<tr>
+  <td><strong>判定结果</strong>　<span style="color:var(--text-secondary)">关卡的裁决</span></td>
+  <td><strong>输出</strong><br><span style="font-size:0.85em;color:var(--text-secondary)">系统算出来的</span></td>
+  <td><code>allow</code>　<code>deny</code>　<code>ask</code>　（<code>passthrough</code>）</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p>四种结果的含义：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:16%">结果</th><th style="width:22%">谁能给出</th><th>意思</th></tr></thead>
+<tbody>
+<tr><td><code>allow</code></td><td>最终答案</td><td>直接执行</td></tr>
+<tr><td><code>deny</code></td><td>最终答案</td><td>不执行。把原因作为一条 <code>is_error</code> 结果回给模型，让它换个思路</td></tr>
+<tr><td><code>ask</code></td><td>最终答案</td><td>问用户。交互式终端弹确认框，没有 UI 的后台场景降级成 <code>deny</code></td></tr>
+<tr><td><code>passthrough</code></td><td><strong>只有工具能给</strong></td><td>「我不表态」，交给后面的关卡。<em>它永远不会是最终答案</em></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box box-real">
+  <p class="box-title">passthrough 为什么当不了最终答案</p>
+  <p>真实源码用两个类型把这件事钉死了：</p>
+  <pre style="margin-top:0.5rem"><code><span class="cm">// 最终答案，只有 3 种</span>
+export type PermissionDecision =
+  | PermissionAllowDecision | PermissionAskDecision | PermissionDenyDecision
+
+<span class="cm">// 工具能返回的，多一种</span>
+export type PermissionResult = PermissionDecision | { behavior: 'passthrough'; … }</code></pre>
+  <p style="margin-top:0.5rem"><code>passthrough</code> 只出现在 <code>PermissionResult</code> 里，不在 <code>PermissionDecision</code> 里。<strong>编译器保证它出不了这个函数</strong>，它在 1c 产生，最晚在第 3 步被转成 <code>ask</code>。</p>
+  <p style="margin-top:0.5rem"><span class="where" style="font-family:var(--font-mono);font-size:0.78rem;color:var(--text-secondary)">src/types/permissions.ts:241 与 :251</span></p>
+</div>
+
+<p>顺带一个精确的事实：用户可见的模式确实是 5 种（源码里叫 <code>EXTERNAL_PERMISSION_MODES</code>），但类型里还藏着两个内部模式 <code>auto</code> 和 <code>bubble</code>。<code>auto</code> 就是「让 AI 批准 AI」那个模式，要 <code>TRANSCRIPT_CLASSIFIER</code> 这个 feature flag 才会进入可选列表。<strong>而这份反编译仓库里 <code>feature()</code> 恒为 <code>false</code>，所以它在这里根本用不了</strong>。</p>
 
 <div class="box box-why">
   <p class="box-title">理解顺序的钥匙</p>
@@ -87,40 +161,74 @@
   <p style="margin-top:0.5rem">这个函数的<strong>规格就是「第 2a 步之前的全部步骤」</strong>。如果顺序只是随手排的，这句话根本没法作为定义写下来。步骤编号在这里已经不是注释，是可以被引用的契约。</p>
 </div>
 
-<h2>动手：把判定矩阵打出来</h2>
+<h2>动手一：把走廊走一遍</h2>
 
-<p><code>v3</code> 已经建好了。它在 <code>call()</code> 之前插了一步 <code>canUseTool()</code>，并且每个判定都带一个 <code>decidedAt</code> 字段记录是谁做的决定（真实源码里对应 <code>decisionReason</code>）。</p>
+<p><code>v3</code> 已经建好了。它在 <code>call()</code> 之前插了一步 <code>canUseTool()</code>，并且能把判定过程一步步打出来。</p>
 
 <pre><code>cd D:\code\learning\claude-code-source\mini-cc
-bun run src/v3/main.ts --matrix</code></pre>
+bun run src/v3/main.ts --trace</code></pre>
 
-<p>四种操作 × 五种模式：</p>
+<p>它跑两个场景，<strong>模式完全相同，都是 <code>bypassPermissions</code>（全放行）</strong>，只有目标文件不一样。</p>
 
-<pre><code><span class="cm">写普通文件 (write_file)</span>
-  default            ask   ← 3 默认落到 ask
-  acceptEdits        allow ← 2b acceptEdits 模式
-  bypassPermissions  allow ← 2a bypassPermissions 模式
-  dontAsk            deny  ← dontAsk 模式
-  plan               deny  ← 1d 工具自身 deny（plan 模式禁止写盘）
+<p><strong>场景一，写一个普通文件：</strong></p>
 
-<span class="cm">写 .git/config (write_file)</span>
-  default            ask   ← 1g 敏感路径 safetyCheck（bypass 免疫）
-  acceptEdits        ask   ← 1g 敏感路径 safetyCheck（bypass 免疫）
-  <span class="hl">bypassPermissions  ask   ← 1g 敏感路径 safetyCheck（bypass 免疫）</span>
-  dontAsk            deny  ← dontAsk 模式
-  plan               deny  ← 1d 工具自身 deny（plan 模式禁止写盘）</code></pre>
+<pre><code>  ✓ 1a 整工具 deny 规则           没配这条规则，继续往下
+  ✓ 1b 整工具 ask 规则            没配这条规则，继续往下
+  ✓ 1c 问工具自己                 工具的意见是 passthrough，继续往下
+  ✓ 1d 工具自身 deny              工具没有拒绝，继续往下
+  ✓ 1e requiresUserInteraction    工具没有这个要求，继续往下
+  ✓ 1f 内容级 ask 规则            没命中用户配的内容级规则，继续往下
+  ✓ 1g 敏感路径 safetyCheck       不是敏感路径，继续往下
+  <span class="hl">■ 2a bypassPermissions 模式     用户开了全放行</span>
+  　↓ 后面的关卡根本没走到
+  结果：allow</code></pre>
 
-<p>高亮那行是本课的全部重点。<strong><code>bypassPermissions</code> 是「全放行」，可它没能放行这一个。</strong></p>
+<p>一路绿灯走到 2a，通行证在这里被检查，放行。</p>
+
+<p><strong>场景二，改成写 <code>.git/config</code>：</strong></p>
+
+<pre><code>  ✓ 1a 整工具 deny 规则           没配这条规则，继续往下
+  ✓ 1b 整工具 ask 规则            没配这条规则，继续往下
+  ✓ 1c 问工具自己                 工具的意见是 ask，继续往下
+  ✓ 1d 工具自身 deny              工具没有拒绝，继续往下
+  ✓ 1e requiresUserInteraction    工具没有这个要求，继续往下
+  ✓ 1f 内容级 ask 规则            没命中用户配的内容级规则，继续往下
+  <span class="hl">■ 1g 敏感路径 safetyCheck       路径位于敏感目录 .git/ 之内</span>
+  　↓ 后面的关卡根本没走到
+  结果：ask</code></pre>
+
+<div class="box box-why">
+  <p class="box-title">把这两段对着看</p>
+  <p>通行证一模一样，都是「全放行」。差别只有一处：<strong>第二次在 1g 就被拦住了，压根没走到检查通行证的 2a。</strong></p>
+  <p style="margin-top:0.5rem">所以 bypass 拦不住敏感路径，并不是因为它内部做了什么例外判断。<em>它只是排在后面，没轮到它说话。</em></p>
+</div>
+
+<h2>动手二：看全貌</h2>
+
+<p>走廊讲的是过程，矩阵给的是结论。三种操作 × 五种模式：</p>
+
+<pre><code>bun run src/v3/main.ts --matrix</code></pre>
+
+<pre><code>                  default    acceptEdits  bypassPerm   dontAsk    plan
+读普通文件        allow      allow        allow        allow      allow
+写普通文件        ask        allow        allow        deny       deny
+<span class="hl">写 .git/config    ask        ask          ask          deny       deny</span></code></pre>
+
+<p>横着读第二行，五种模式给出五种不同答案，说明模式确实在起作用。</p>
+
+<p>再横着读第三行。<strong>模式从严到松排开，前三格纹丝不动。</strong>因为这三种模式的判断都在 2a 和 2b，而这一行在 1g 就停住了。后两格变成 <code>deny</code> 是另一回事，<code>dontAsk</code> 在最外层把 <code>ask</code> 改判了，<code>plan</code> 更早在 1d 就拒绝了写盘。</p>
 
 <h3>实验 A · 亲手把闸门拆掉</h3>
 
-<p>光看表还不够，得自己制造一次漏洞才记得住。打开 <code>src/v3/permissions.ts</code>，把 <code>1g</code> 那一段整体剪切，粘贴到 <code>2a</code> 的<strong>后面</strong>。只是挪位置，一个字符都不改。</p>
+<p>光看结论还不够，得自己制造一次漏洞才记得住。打开 <code>src/v3/permissions.ts</code>，把 <code>1g</code> 那一段整体剪切，粘贴到 <code>2a</code> 的<strong>后面</strong>。只是挪位置，一个字符都不改。</p>
 
-<p>重跑矩阵，那一行会变成：</p>
+<p>重跑 <code>--matrix</code>，最后一行的第三格会从 <code>ask</code> 变成：</p>
 
-<pre><code>  bypassPermissions  <span class="hl">allow</span> ← 2a bypassPermissions 模式</code></pre>
+<pre><code>写 .git/config    ask        ask          <span class="hl">allow</span>        deny       deny</code></pre>
 
-<p>系统现在允许模型改你的 git 配置了。我实测跑过这一步，结果就是上面这样。<em>挪回去。</em></p>
+<p>再跑 <code>--trace</code> 看为什么。走廊现在长这样：1g 不在原来的位置了，于是判定一路走到 2a，通行证生效，放行。<strong>系统现在允许模型改你的 git 配置了。</strong></p>
+
+<p>我实测跑过这一步，结果就是上面这样。<em>挪回去。</em></p>
 
 <div class="box box-trap">
   <p class="box-title">这个漏洞的性质值得琢磨</p>

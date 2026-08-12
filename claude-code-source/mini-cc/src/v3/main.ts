@@ -49,41 +49,96 @@ function colorFor(behavior: string): string {
   return YELLOW
 }
 
+const CASES: Array<{ label: string; tool: string; input: Record<string, unknown> }> = [
+  { label: '读普通文件', tool: 'read_file', input: { path: 'package.json' } },
+  { label: '写普通文件', tool: 'write_file', input: { path: 'scratch/a.md', content: 'x' } },
+  { label: '写 .git/config', tool: 'write_file', input: { path: '.git/config', content: 'x' } },
+]
+
+/** 中文字符按两格宽算，否则表格对不齐。 */
+function width(s: string): number {
+  let n = 0
+  for (const ch of s) n += /[一-鿿　-〿＀-￯]/.test(ch) ? 2 : 1
+  return n
+}
+function padTo(s: string, target: number): string {
+  return s + ' '.repeat(Math.max(0, target - width(s)))
+}
+
 /**
- * 判定矩阵。本课最值得盯着看的一张表。
+ * 判定矩阵：一张真正的二维表。
  *
- * 重点看 .git/config 那两行：无论开什么模式，结论都不是 allow，
- * 而且判定发生在第 1g 步，也就是 bypassPermissions（2a）之前。
+ * 行是「你要干什么」，列是「你设了什么模式」，格子里是结果。
+ * 只看一件事：最后一行在五种模式下几乎不变。
  */
 async function printMatrix() {
-  const cases: Array<{ label: string; tool: string; input: Record<string, unknown> }> = [
-    { label: '读普通文件', tool: 'read_file', input: { path: 'package.json' } },
-    { label: '写普通文件', tool: 'write_file', input: { path: 'scratch/a.md', content: 'x' } },
-    { label: '写 .git/config', tool: 'write_file', input: { path: '.git/config', content: 'x' } },
-    { label: '写 .claude/settings.json', tool: 'write_file', input: { path: '.claude/settings.json', content: 'x' } },
-  ]
-
   console.log(`${BOLD}权限判定矩阵${RESET}`)
-  console.log(`${DIM}每格显示：判定结果 ← 由哪一步决定${RESET}\n`)
+  console.log(`${DIM}行 = 你要干什么　列 = 你设的模式　格子 = 判定结果${RESET}\n`)
 
-  for (const c of cases) {
-    console.log(`${BOLD}${c.label}${RESET} ${DIM}(${c.tool})${RESET}`)
+  const rowLabelWidth = 18
+  const colWidth = 20
+
+  let header = padTo('', rowLabelWidth)
+  for (const m of MODES) header += padTo(m, colWidth)
+  console.log(`${DIM}${header}${RESET}`)
+
+  for (const c of CASES) {
     const tool = TOOLS.find((t) => t.name === c.tool)!
+    let line = padTo(c.label, rowLabelWidth)
     for (const mode of MODES) {
       const d = await canUseTool(tool, c.input, makeContext(mode))
-      const color = colorFor(d.behavior)
-      console.log(
-        `  ${DIM}${mode.padEnd(19)}${RESET}${color}${d.behavior.padEnd(6)}${RESET}` +
-          `${DIM}← ${d.decidedAt}${RESET}`,
-      )
+      const cell = padTo(d.behavior, colWidth)
+      line += `${colorFor(d.behavior)}${cell}${RESET}`
     }
-    console.log()
+    console.log(line)
   }
 
-  console.log(`${YELLOW}注意 .git/ 和 .claude/ 那两组：${RESET}`)
-  console.log(`${DIM}  bypassPermissions 是「全放行」，可它没能放行这两个。${RESET}`)
-  console.log(`${DIM}  因为 safetyCheck 在第 1g 步，而 bypass 在第 2a 步，前者先 return。${RESET}`)
-  console.log(`${DIM}  把 permissions.ts 里 1g 那段挪到 2a 后面，这张表立刻就变了。${RESET}`)
+  console.log()
+  console.log(`${YELLOW}看最后一行。${RESET}${DIM}五种模式从严到松排开，写 .git/config 的结论几乎没动。${RESET}`)
+  console.log(`${DIM}想知道为什么，用 --trace 把判定过程一步步打出来。${RESET}`)
+}
+
+/**
+ * 走廊追踪：把一次判定走过的每个关卡都打出来。
+ *
+ * 矩阵只给结论，这个给过程。对照着看两次追踪，
+ * 「顺序即语义」这件事就不需要解释了。
+ */
+async function printTrace() {
+  console.log(`${BOLD}判定走廊${RESET}`)
+  console.log(`${DIM}10 道关卡串成一条走廊，从上往下走，第一个拦住你的说了算。${RESET}\n`)
+
+  const scenarios = [
+    { title: '写普通文件 scratch/a.md，bypassPermissions 模式', case: CASES[1]!, mode: 'bypassPermissions' as PermissionMode },
+    { title: '写 .git/config，同样是 bypassPermissions 模式', case: CASES[2]!, mode: 'bypassPermissions' as PermissionMode },
+  ]
+
+  for (const s of scenarios) {
+    console.log(`${BOLD}${s.title}${RESET}`)
+    const tool = TOOLS.find((t) => t.name === s.case.tool)!
+    const trace: string[] = []
+    const d = await canUseTool(tool, s.case.input, makeContext(s.mode), trace)
+
+    let stopped = false
+    for (const line of trace) {
+      const [kind, step, why] = line.split('|') as [string, string, string]
+      if (kind === 'PASS') {
+        console.log(`  ${GREEN}✓${RESET} ${DIM}${padTo(step, 30)}${why}，继续往下${RESET}`)
+      } else {
+        console.log(`  ${RED}■${RESET} ${BOLD}${padTo(step, 30)}${RESET}${YELLOW}${why}${RESET}`)
+        stopped = true
+      }
+    }
+    if (stopped) {
+      console.log(`  ${DIM}${'　'.repeat(1)}↓ 后面的关卡根本没走到${RESET}`)
+    }
+    console.log(`  ${DIM}结果：${RESET}${colorFor(d.behavior)}${d.behavior}${RESET}\n`)
+  }
+
+  console.log(`${YELLOW}对比这两次：${RESET}`)
+  console.log(`${DIM}  第一次走到了 2a（全放行），所以放行。${RESET}`)
+  console.log(`${DIM}  第二次在 1g 就被拦下，2a 那句「全放行」压根没机会执行。${RESET}`)
+  console.log(`${DIM}  bypass 拦不住敏感路径，不是因为它做了例外判断，是因为它排在后面。${RESET}`)
 }
 
 async function runAgent(mode: PermissionMode) {
@@ -150,6 +205,11 @@ async function main() {
 
   if (args.includes('--matrix')) {
     await printMatrix()
+    return
+  }
+
+  if (args.includes('--trace')) {
+    await printTrace()
     return
   }
 
