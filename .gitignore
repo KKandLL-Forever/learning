@@ -36,6 +36,10 @@ Thumbs.db
 # 改写前的备份（humanizer-zh 润色时生成，仅供本地对照）
 *.orig
 
+# mini-cc 落盘的工具结果（第 0005 课，运行时产物）
+**/.mini-cc/
+**/scratch/
+
 # Python（仓库根目录另有 python/ 内容）
 __pycache__/
 *.pyc

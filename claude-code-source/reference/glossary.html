@@ -152,6 +152,22 @@
 <dt>回灌<span class="en">状态写出去再读回来</span><span class="ch">10</span></dt>
 <dd>不指望模型「记住」任何东西。待办清单存在外部状态里，<strong>每轮通过 attachment 重新贴到对话末尾</strong>，永远处在「最近」的位置。代价是每轮多几百 token，换来行为的确定性。</dd>
 
+<dt>落盘<span class="en">persist, not truncate</span><span class="ch">06</span></dt>
+<dd>结果太大时的处理方式。全文写到 <code>tool-results/&lt;tool_use_id&gt;.txt</code>，模型收到的换成一段 <code>&lt;persisted-output&gt;</code>，里面有原始大小、文件路径、2KB 预览。<strong>截断改变信息量，落盘只改变寻址方式</strong>，模型需要全文时自己 Read 取回。
+<span class="where">src/utils/toolResultStorage.ts:137</span></dd>
+
+<dt>maxResultSizeChars<span class="en">单个结果的阈值</span><span class="ch">06</span></dt>
+<dd>工具契约里的一个成员，声明「结果超过多少字符就落盘」。它<strong>不是最终阈值</strong>：<code>Math.min(声明值, 50000)</code> 会把它夹住，所以工具只能往严了调。<code>Infinity</code> 是唯一例外，表示永不落盘，判断位置在夹取<strong>之前</strong>。<code>Read</code> 用它避开 Read→落盘→再 Read 的循环。
+<span class="where">src/Tool.ts:466 · toolResultStorage.ts:55</span></dd>
+
+<dt>每消息预算<span class="en">per-message aggregate budget</span><span class="ch">06</span></dt>
+<dd>第二层闸，上限 200,000 字符。存在的理由是「合规可以叠加」：10 个并行工具各吐 40K，每个都没超自己的阈值，但它们在 wire 上是<strong>同一条 user 消息</strong>。超了就按体积从大到小替换，落回预算即停。消息之间互相独立，历史总量归压缩管。
+<span class="where">src/constants/toolLimits.ts:49</span></dd>
+
+<dt>ContentReplacementState<span class="en">冻结语义</span><span class="ch">05 · 06</span></dt>
+<dd>两个字段：<code>seenIds</code>（过过一遍预算检查的）和 <code>replacements</code>（其中被替换的，连当时给模型看的那串字一起存）。规矩是<strong>进了 seenIds 命运就定型</strong>，替过的每轮查表贴回，没替的从此不许替。理由不在结果本身，在它之前那些字节：决定一变，请求前缀就断，缓存全部作废。存字符串而非重新生成，是防止改模板时悄悄破坏前缀。
+<span class="where">src/utils/toolResultStorage.ts:390</span></dd>
+
 <dt>microCompact<span class="en">日常清扫</span><span class="ch">06</span></dt>
 <dd>不动结构，只把很久以前那些工具结果的<strong>正文</strong>挖掉，换成 <code>[Old tool result content cleared]</code>。骨架还在（模型知道「我第 3 轮读过这个文件」），内容没了。</dd>
 

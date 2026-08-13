@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 0005 课 · 结果预算：800KB 日志怎么办</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<p class="lesson-meta">第 0005 课 · Claude Code 源码架构</p>
+<h1>结果预算</h1>
+<p class="lesson-sub">权限管住了「能不能做」。做完之后的东西还得塞回对话，而一次 <code>npm test</code> 吐 800KB 日志。这一课看这个代码库怎么处理它，答案不是截断。</p>
+
+<div class="box box-do">
+  <p class="box-title">这节课结束时你会有</p>
+  <ul>
+    <li><code>mini-cc v4</code>：两层预算闸，都能单独跑给你看（<code>--budget</code>、<code>--aggregate</code>）</li>
+    <li>一个能看出前缀稳定性的实验：同一段历史跑四轮，中途改预算，对比历史消息的内容指纹变没变（<code>--stability</code>）</li>
+    <li>一条可以直接搬走的判断：<strong>裁剪上下文时，「删掉」和「换个地方放」是两种性质完全不同的操作</strong></li>
+  </ul>
+</div>
+
+<div class="box box-real">
+  <p class="box-title">开始之前 · Node 标准库</p>
+  <p><code>mkdir</code>、<code>writeFile</code>、<code>join</code>、<code>dirname</code> 前几课已经用过，不再重复。本课新增四样。</p>
+  <div class="table-wrap">
+  <table>
+  <thead><tr><th style="width:20%">来自</th><th style="width:20%">函数</th><th>做什么</th></tr></thead>
+  <tbody>
+  <tr><td><code>node:fs/promises</code></td><td><code>writeFile</code> 的 <code>flag</code> 选项</td><td>第三个参数除了传编码字符串，也可以传对象。<code>{ flag: 'wx' }</code> 的意思是「只在文件不存在时创建」，已存在就抛错，绝不覆盖。默认的 <code>'w'</code> 是覆盖</td></tr>
+  <tr><td><code>node:fs/promises</code></td><td><code>rm</code></td><td>删除文件或目录。<code>rm(p, { recursive: true, force: true })</code> 相当于 <code>rm -rf</code>，目标不存在也不报错。演示前清场用</td></tr>
+  <tr><td>（错误对象本身）</td><td><code>error.code</code></td><td>Node 的文件系统错误都带一个 <code>code</code> 字段，取值是 <code>'EEXIST'</code>、<code>'ENOENT'</code>、<code>'ENOSPC'</code> 这类固定字符串。判断「是哪一种失败」要看它，不要去匹配 <code>message</code> 里的英文</td></tr>
+  <tr><td><code>node:crypto</code></td><td><code>createHash</code></td><td>算摘要。<code>createHash('sha1').update(text).digest('hex')</code> 得到一串十六进制。这一课只拿它当指纹用，判断两次的内容是不是逐字节相同</td></tr>
+  </tbody>
+  </table>
+  </div>
+  <p>它们在落盘那一步是连着用的：先 <code>mkdir</code> 建目录，再用 <code>flag: 'wx'</code> 写文件，写失败先看 <code>error.code</code> 是不是 <code>EEXIST</code>，是就当作「上一轮已经写过了」继续往下走，其它错误才算真失败。</p>
+</div>
+
+<h2>一个具体的数字问题</h2>
+
+<p>模型没有记忆，所以每一轮都要把完整历史重新发一遍。这是第 0001 课就立住的事实，到这一课它开始收费了。</p>
+
+<p>假设第 3 轮跑了个测试，日志 800KB。原样塞进 <code>messages</code>，会发生的事情是：</p>
+
+<ol class="steps">
+  <li>第 4 轮请求带上这 800KB</li>
+  <li>第 5 轮请求带上这 800KB</li>
+  <li>第 6 轮、第 7 轮，一直到这段历史被压缩掉为止，每轮都带</li>
+</ol>
+
+<p>按 4 字节一个 token 粗算，800KB 大约 20 万 token。它不是花掉一次，是每轮都花一次。</p>
+
+<h3>直觉解法：截断</h3>
+
+<p>留前 2000 字，剩下的扔掉。省是省下来了，代价在于扔掉的部分从此不存在。测试日志的失败信息通常在末尾，而你刚好留了开头。</p>
+
+<p>模型这时候没有任何补救办法。它想看也看不到，因为那段内容已经不在系统里的任何地方了。</p>
+
+<h3>这个代码库的选法：落盘</h3>
+
+<p>全文写到磁盘上，模型收到的换成这么一段：</p>
+
+<pre><code>&lt;persisted-output&gt;
+Output too large (44.4KB). Full output saved to: …/.mini-cc/tool-results/call_1.txt
+
+Preview (first 2.0KB):
+&gt; mini-cc test unit
+[00001] unit · case_1 ... ok (1ms)
+…
+&lt;/persisted-output&gt;</code></pre>
+
+<p>三样东西缺一不可。<strong>原始大小</strong>让模型知道自己错过了多少，<strong>路径</strong>让它能取回来，<strong>预览</strong>让它多半不用取。</p>
+
+<div class="box box-why">
+  <p class="box-title">这两种做法的差别</p>
+  <p>截断改变的是<strong>信息量</strong>，落盘改变的是<strong>寻址方式</strong>。</p>
+  <p style="margin-top:0.5rem">落盘之后全文一直在，只是不再占用每一轮的额度。模型缺什么自己去读，一次 <code>read_file</code> 的成本，换掉了每轮都付的 800KB。</p>
+  <p style="margin-top:0.5rem">而且大多数时候它不会去读。预览 2KB 通常够判断「测试过了」这种事。<em>省下来的是「可能不需要的完整信息」，不是「信息」。</em></p>
+</div>
+
+<h2>两层闸，各管各的</h2>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:22%">层</th><th style="width:26%">管什么</th><th style="width:16%">阈值</th><th>触发时机</th></tr></thead>
+<tbody>
+<tr><td><strong>第一层</strong></td><td>单个结果太大</td><td>工具声明，全局夹住</td><td>工具刚跑完，结果进消息之前</td></tr>
+<tr><td><strong>第二层</strong></td><td>一条消息里加起来太大</td><td>200,000 字符</td><td>每轮请求发出之前</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>第一层：工具能声明，但只能往严了声明</h3>
+
+<p>工具契约里那个成员在第 0002 课出现过，一直没用上：</p>
+
+<p class="src-ref">src/Tool.ts:466</p>
+<pre><code>maxResultSizeChars: number</code></pre>
+
+<p>关键在于它<strong>不是最终阈值</strong>。真正算阈值的函数长这样：</p>
+
+<p class="src-ref">src/utils/toolResultStorage.ts:55</p>
+<pre><code>export function getPersistenceThreshold(toolName, declaredMaxResultSizeChars) {
+  <span class="cm">// Infinity = hard opt-out.</span>
+  <span class="hl">if (!Number.isFinite(declaredMaxResultSizeChars)) {
+    return declaredMaxResultSizeChars
+  }</span>
+  …
+  return <span class="hl">Math.min(declaredMaxResultSizeChars, DEFAULT_MAX_RESULT_SIZE_CHARS)</span>
+}</code></pre>
+
+<p><code>DEFAULT_MAX_RESULT_SIZE_CHARS</code> 是 50,000。那个 <code>Math.min</code> 决定了工具作者的活动范围只有一个方向：声明 20,000 会生效，声明 100,000 会被拉回 50,000。</p>
+
+<p>源码里大部分工具写的是 <code>100_000</code>，等于什么都没说。真正调过的只有几个，<code>BashTool</code> 是 <code>30_000</code>，<code>GrepTool</code> 是 <code>20_000</code>，都是往严了调。</p>
+
+<div class="box box-real">
+  <p class="box-title">Infinity 那个分支为什么在 Math.min 之前</p>
+  <p><code>FileReadTool</code> 声明的是 <code>Infinity</code>（<code>FileReadTool.ts:342</code>）。理由在 <code>Tool.ts:462</code> 的注释里：</p>
+  <p style="margin-top:0.5rem"><em>persisting creates a circular Read→file→Read loop</em></p>
+  <p style="margin-top:0.5rem">Read 的结果落盘之后，模型要拿全文只能再 Read 一次那个文件，而那次结果又超阈值，又落盘。转不出来。</p>
+  <p style="margin-top:0.5rem">所以这个判断必须在夹取之前。而且源码在这里加了一句额外的话：<em>Checked before the GB override so tengu_satin_quoll can't force it back on</em>。<strong>连运行时特性开关都不许把它扳回来。</strong></p>
+</div>
+
+<h3>动手一：看阈值是怎么算出来的</h3>
+
+<pre><code>cd D:\code\learning\claude-code-source\mini-cc
+bun run src/v4/main.ts --thresholds</code></pre>
+
+<pre><code>工具                声明值    全局上限    实际阈值   说明
+read_file                ∞      50,000           ∞   硬退出，不参与夹取
+list_dir            50,000      50,000      50,000   被全局上限夹住
+write_file          50,000      50,000      50,000   被全局上限夹住
+sleep               50,000      50,000      50,000   被全局上限夹住
+<span class="hl">run_tests           30,000      50,000      30,000   自己调得更严，生效</span></code></pre>
+
+<p><code>v4</code> 新加了一个 <code>run_tests</code> 工具，专门产生大块日志，行数可调。它的 <code>30_000</code> 抄的是真实源码里 <code>BashTool</code> 的值。</p>
+
+<pre><code>bun run src/v4/main.ts --budget</code></pre>
+
+<pre><code>400 行 → 原始 14.7KB · 进消息的 14.7KB   原样通过
+
+1200 行 → 原始 44.4KB · 进消息的 <span class="hl">2.1KB</span>   落盘
+模型实际收到的开头：
+  │ &lt;persisted-output&gt;
+  │ Output too large (44.4KB). Full output saved to: …\call_1.txt
+  │
+  │ Preview (first 2.0KB):
+  │ …（预览 2KB，然后是收尾标签）</code></pre>
+
+<p>44.4KB 换成 2.1KB，全文在磁盘上等着。</p>
+
+<h2>第二层：为什么一层不够</h2>
+
+<p>设想 8 个 <code>run_tests</code> 并行，每个吐 29KB。<strong>每一个都没超 30,000 的阈值，第一层全部放行。</strong></p>
+
+<p>但这 8 个结果会一起进入<em>同一条</em> user 消息。这件事第 0003 课已经埋下了：并行工具的结果收集起来，作为一条消息追加到历史里。加起来 232KB。</p>
+
+<p class="src-ref">src/constants/toolLimits.ts:35 · 源码注释原文</p>
+<pre><code><span class="cm">// This prevents N parallel tools from each hitting the per-tool max and
+// collectively producing e.g. 10 × 40K = 400K in one turn's user message.</span></code></pre>
+
+<h3>动手二：让它触发</h3>
+
+<pre><code>bun run src/v4/main.ts --aggregate</code></pre>
+
+<pre><code>第一层放行了全部 8 个（每个 28.4KB &lt; 30000）。
+但它们在 wire 上是【同一条 user 消息】：
+  合计 232,256 字符，每消息预算 200,000，<span class="hl">超了 32,256</span>
+
+预算跑完
+  替换了 2 个（从大到小挑，挑到落回预算为止）
+  232,256 → <span class="hl">178,548</span>，省下 52.4KB</code></pre>
+
+<p>注意它只替换了 2 个，剩下 6 个的全文模型照样看得见。</p>
+
+<div class="box box-why">
+  <p class="box-title">为什么按体积从大到小挑，而且见好就收</p>
+  <p>替换是有代价的，模型从此看不到那部分全文了。所以目标是<strong>用最少的替换次数换回足够的额度</strong>。一个 300K 的结果换掉，抵得上三十个 10K 的。</p>
+  <p style="margin-top:0.5rem">循环条件写的是「总量落回预算以内就停」（<code>toolResultStorage.ts:683</code>），不是「全部替换」。多替一个，就多逼模型跑一次 <code>read_file</code>。</p>
+</div>
+
+<div class="box box-trap">
+  <p class="box-title">真实源码在这里比 mini-cc 麻烦得多</p>
+  <p>「一条消息」在 mini-cc 里是显而易见的，一轮工具结果就是一条。真实源码里不是。</p>
+  <p style="margin-top:0.5rem"><code>normalizeMessagesForAPI</code> 会把<strong>连续的</strong> user 消息合并成一条发出去，只有 assistant 消息才制造边界。所以预算的分组函数必须用同样的规则再走一遍（<code>toolResultStorage.ts:600</code>）。注释里说得很直白：</p>
+  <p style="margin-top:0.5rem"><em>The budget must group the same way or it would see N under-budget messages instead of one over-budget message and fail to enforce exactly when it matters most.</em></p>
+  <p style="margin-top:0.5rem">分组分错了不会报错，只会在<strong>最该生效的时候悄悄失效</strong>。这类 bug 的代价是账单，不是崩溃。</p>
+</div>
+
+<h2>冻结：见过一次，命运就定了</h2>
+
+<p>到这里为止的逻辑都很直白。接下来这一段是整个模块里最反直觉的部分，也是最值钱的部分。</p>
+
+<p>预算跑在每一轮请求之前，而每一轮发的都是完整历史。所以第 5 轮跑预算时，第 3 轮的那些结果会被再看一遍。</p>
+
+<p><strong>问题来了：如果这次判断的结果和上次不一样呢？</strong></p>
+
+<p>上一轮发的是全文，这一轮发的是预览，那么请求的字节流从那一处开始就变了。变了的地方往后，缓存前缀全部作废，整段重新计费。省下来的那点额度，还不够赔的。</p>
+
+<p>所以这个模块用两个字段把决定钉死：</p>
+
+<p class="src-ref">src/utils/toolResultStorage.ts:390</p>
+<pre><code>export type ContentReplacementState = {
+  <span class="hl">seenIds: Set&lt;string&gt;</span>              <span class="cm">// 过过一遍预算检查的，无论替没替</span>
+  <span class="hl">replacements: Map&lt;string, string&gt;</span> <span class="cm">// 其中被替换的，连当时给模型看的那串字一起存</span>
+}</code></pre>
+
+<p>规则只有一句：<strong>进了 <code>seenIds</code>，这个结果的命运就不再改变。</strong></p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:20%">分类</th><th style="width:30%">上一轮的决定</th><th>这一轮怎么处理</th></tr></thead>
+<tbody>
+<tr><td><code>mustReapply</code></td><td>替换过</td><td>原样再贴一次。纯 Map 查表，零 IO，逐字节相同，不可能失败</td></tr>
+<tr><td><code>frozen</code></td><td>见过，没替</td><td>从此不许再替。就算现在超预算了也不替</td></tr>
+<tr><td><code>fresh</code></td><td>没见过</td><td>这一轮唯一能动的</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>还有一个细节值得注意：<code>replacements</code> 存的是<strong>字符串本身</strong>，不是「稍后重新生成」。源码解释了为什么：</p>
+
+<p class="src-ref">src/utils/toolResultStorage.ts:474 · 源码注释原文</p>
+<pre><code><span class="cm">// `replacement` is the exact string the model saw — stored rather than
+// derived on resume so code changes to the preview template, size formatting,
+// or path layout can't silently break prompt cache.</span></code></pre>
+
+<p>改一下预览模板、改一下体积的显示格式，重新生成出来的字符串就和当初发出去的差一点点。差一个字符，前缀就断了。存下来是唯一可靠的做法。</p>
+
+<h3>动手三：把前缀稳定性量出来</h3>
+
+<p>光讲不够，这个实验能直接看到差别。同一段历史跑四轮，第 3 轮之前把预算从 200,000 调到 60,000（真实系统里就是改个特性开关），看历史消息的内容指纹变不变。</p>
+
+<pre><code>bun run src/v4/main.ts --stability</code></pre>
+
+<pre><code>带状态（真实行为）
+  第 1 轮  hash 505d1eb29a  新替 2 · 查表贴回 0  基准
+  第 2 轮  hash 505d1eb29a  新替 0 · 查表贴回 2  前缀不变
+  第 3 轮  hash 505d1eb29a  新替 0 · 查表贴回 2  前缀不变 （预算改成 60000）
+  第 4 轮  hash 505d1eb29a  新替 0 · 查表贴回 2  前缀不变
+
+不带状态（假设没有冻结）
+  第 1 轮  hash 505d1eb29a  新替 2 · 查表贴回 0  基准
+  第 2 轮  hash 505d1eb29a  新替 2 · 查表贴回 0  前缀不变
+  第 3 轮  hash <span class="hl">fca65578d2</span>  新替 6 · 查表贴回 0  <span class="hl">前缀变了 → 缓存作废</span>
+  第 4 轮  hash fca65578d2  新替 6 · 查表贴回 0  前缀不变</code></pre>
+
+<div class="box box-why">
+  <p class="box-title">读这张表</p>
+  <p>盯 hash 那一列。它是第一条 user 消息里所有 <code>tool_result</code> 内容拼起来的指纹。</p>
+  <p style="margin-top:0.5rem"><strong>带状态</strong>：预算怎么改，那条历史消息一个字节都没动。因为老决定走的是「查表贴回去」，根本没重新判断。</p>
+  <p style="margin-top:0.5rem"><strong>不带状态</strong>：预算一改，同一条历史消息重新算了一遍，这次它超了 60,000，于是多替了 4 个。hash 变了，那一处往后的缓存全废。</p>
+  <p style="margin-top:0.5rem">「新替 / 查表贴回」这两个数字也值得看。带状态那边从第 2 轮起就是 <code>0 / 2</code>，说明预算模块每轮做的事情越来越少，只是把老账贴回去。</p>
+</div>
+
+<h2>一个补丁，讲的是别的事</h2>
+
+<p>第一层那个函数开头有个分支，和体积毫无关系：</p>
+
+<p class="src-ref">src/utils/toolResultStorage.ts:280 · 源码注释节选</p>
+<pre><code><span class="cm">// inc-4586: Empty tool_result content at the prompt tail causes some models
+// to emit the \n\nHuman: stop sequence and end their turn with zero output.
+// … Several tools can legitimately produce empty output (silent-success
+// shell commands, MCP servers returning content:[], REPL statements, etc.).
+// Inject a short marker so the model always has something to react to.</span>
+
+if (isToolResultContentEmpty(content)) {
+  return { ...toolResultBlock, content: <span class="hl">`(${toolName} completed with no output)`</span> }
+}</code></pre>
+
+<p><code>inc-4586</code> 是个事故编号。空的工具结果落在提示词末尾时，某些模型会把 <code>&lt;/function_results&gt;</code> 后面那两个换行误当成轮次边界，直接收工，一个字都不输出。</p>
+
+<p>而空输出完全合法。一条静默成功的 shell 命令就是这样。</p>
+
+<p>所以补丁是塞一句废话进去，让模型总有东西可以反应。<strong>这一行代码解释不了自己</strong>，删掉它测试全绿，几个月后又会有人删掉它。那段注释就是它的全部生命保障。</p>
+
+<h2>动手四：完整跑一遍</h2>
+
+<pre><code>bun run src/v4/main.ts "跑一下测试"</code></pre>
+
+<pre><code>── 第 1 轮 ──────────────
+我并行跑三个测试套件。
+    ⚙ run_tests 跑测试 unit（1200 行日志）
+    ⚙ run_tests 跑测试 e2e（900 行日志）
+    ⚙ run_tests 跑测试 smoke（120 行日志）
+      🔒 allow ← 2b 只读工具放行  ×3
+      📦 落盘 32.2KB → 2.1KB，全文在 …\call_2.txt
+      <span class="hl">📦 落盘 44.4KB → 2.1KB，全文在 …\call_1.txt</span>
+── 第 2 轮 ──────────────
+unit 的日志太长被落盘了，预览不够，我把全文取回来。
+    ⚙ read_file 读取 .mini-cc/tool-results/call_1.txt
+      🔒 allow ← 2b 只读工具放行
+── 第 3 轮 ──────────────
+拿到了。预览够用就不用取，不够用我自己去读一次。</code></pre>
+
+<p>三个结果，两个落盘，smoke 那 120 行没超阈值原样通过。第 2 轮模型自己把全文读了回来。</p>
+
+<p>这一步是整个设计的兑现。<strong>截断做不到这件事。</strong>路径明明白白写在模型收到的那段 <code>&lt;persisted-output&gt;</code> 里，它不需要猜。</p>
+
+<div class="box box-trap">
+  <p class="box-title">留给你的一个漏洞</p>
+  <p>看第 2 轮那次 <code>read_file</code>。它读回来的是完整的 44.4KB，而 <code>read_file</code> 声明了 <code>Infinity</code>，第一层放它过去，第二层也豁免它。<strong>这 44.4KB 就这么原样进了历史，一轮没少。</strong></p>
+  <p style="margin-top:0.5rem">所以豁免不是免费的。真实源码里 Read 是有边界的，它自己带行数上限和 <code>maxTokens</code>，源码注释写的是 <em>the tool already self-bounds via its own limits</em>。<code>mini-cc</code> 的 <code>read_file</code> 什么边界都没有。</p>
+  <p style="margin-top:0.5rem">给 <code>read_file</code> 加上 <code>offset</code> 和 <code>limit</code> 参数，让模型能只取自己要的那几行。这是本课的练习，也是<em>豁免必须配自限</em>这条规矩的现场演示。</p>
+</div>
+
+<h2>检验一下</h2>
+
+<div class="quiz" id="quiz"></div>
+
+<h2>这一课在整张地图的哪里</h2>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:14%">课</th><th style="width:34%">加什么</th><th>它挡住的具体失败</th></tr></thead>
+<tbody>
+<tr><td><strong>0001</strong> ✅</td><td>循环骨架 · 显式状态 · 终止原因</td><td>调用方分不清为什么停了</td></tr>
+<tr><td><strong>0002</strong> ✅</td><td>工具契约 · fail-closed 默认值</td><td>工具作者少写一行导致数据竞争</td></tr>
+<tr><td><strong>0003</strong> ✅</td><td>并发分批 · 带上限的合流</td><td>读到旧内容；50 个调用冲垮句柄</td></tr>
+<tr><td><strong>0004</strong> ✅</td><td>权限十步 · 敏感路径 bypass 免疫</td><td>开了全放行就能改 <code>.git/config</code></td></tr>
+<tr><td><strong>0005</strong> ✅</td><td>两层结果预算 · 冻结语义</td><td>一次测试的 800KB 每轮都重发；替换决定漂移打穿缓存</td></tr>
+<tr><td>0006</td><td>Prompt Caching</td><td>前缀动一个字节，整段重新计费</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>第 0005 课和第 0006 课是同一件事的两头。这一课里那个「决定不能改」的约束，理由全部来自缓存；下一课去看缓存本身长什么样，以及这个代码库为它做过哪些让步。</p>
+
+<h2>读一份一手资料</h2>
+
+<div class="box box-do">
+  <p class="box-title">本课推荐（25 分钟）</p>
+  <p><strong>首选 · <a href="../../../claude-code-source/src/utils/toolResultStorage.ts">src/utils/toolResultStorage.ts</a></strong><br>
+  1041 行，但真正要读的是三段。<code>:55</code> 的 <code>getPersistenceThreshold</code> 看 Infinity 分支的位置；<code>:390</code> 的 <code>ContentReplacementState</code> 看那段生命周期注释，它交代了主线程、子 agent、resume 三种情况下这个状态从哪来；<code>:769</code> 的 <code>enforceToolResultBudget</code> 看 <code>state.seenIds.add</code> 出现的每一个位置，<strong>特别是 await 前后那两处，注释解释了为什么要分开写</strong>。</p>
+  <p style="margin-top:0.6rem"><strong>配套 · <a href="../../../claude-code-source/docs/architecture-report.html">架构报告第 06 章</a></strong><br>
+  这一章讲的是完整的上下文管理，结果预算只是其中一环，后面还有三级压缩和 Attachment 回灌。<strong>先扫一遍全章</strong>，知道这四样东西分别管哪一段，第 0007、0008 课会各挑一样展开。</p>
+</div>
+
+<div class="ask-teacher">
+  <strong>💬 有不清楚的地方，直接问我。</strong>比如：
+  <ul style="margin-bottom:0">
+    <li><code>seenIds.add</code> 为什么要在 await 前后分两处写（源码那段并发注释我可以拆开讲）</li>
+    <li>子 agent 复制父状态那一段，和第 0009 课的 fork 是什么关系</li>
+    <li>想给自己的项目设计结果预算，我们可以一起定阈值和豁免名单</li>
+    <li>难度不合适就说一声</li>
+  </ul>
+</div>
+
+<div class="footer-nav">
+  <p><strong>相关：</strong>
+    <a href="0004-permission-order.html">← 第 0004 课：权限判定顺序</a> ·
+    <a href="../reference/glossary.html">速查 · 架构术语表</a> ·
+    <a href="../index.html">课程总览</a> ·
+    <a href="../../../claude-code-source/docs/architecture-report.html">架构报告全文</a>
+  </p>
+  <p style="color:var(--text-secondary);font-size:0.88rem;margin-top:0.75rem">
+    下一课 · <strong>Prompt Caching</strong>。这一课反复出现的「前缀不能变」，下一课去看它到底在保护什么。顺带一个现成的对照：DeepSeek 的缓存是自动的，Claude 的要手动标断点，两种设计各自换来了什么。
+  </p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+<script>
+Quiz.render('#quiz', [
+  {
+    q: '一个工具声明 <code>maxResultSizeChars: 100_000</code>，它的结果实际超过多少字符会落盘？',
+    options: [
+      '100,000，工具自己说了算',
+      '50,000，被全局上限夹住',
+      '不落盘，声明得越大越不受管',
+    ],
+    answer: 1,
+    explain: '<code>getPersistenceThreshold()</code> 最后一行是 <code>Math.min(declared, DEFAULT_MAX_RESULT_SIZE_CHARS)</code>，而后者是 50,000。所以工具的活动范围只有一个方向，往严了调有效，往松了调无效。源码里大部分工具写的 <code>100_000</code> 等于什么都没说。唯一的例外是 <code>Infinity</code>，它在 <code>Math.min</code> <strong>之前</strong>就返回了，走的是另一条路。',
+  },
+  {
+    q: '已经有了单个结果的阈值，为什么还要一层每消息预算？',
+    options: [
+      '因为有的工具会绕过第一层',
+      '因为并行结果会挤进同一条消息',
+      '因为历史累积起来早晚会超',
+    ],
+    answer: 1,
+    explain: '10 个并行工具各吐 40K，每一个都没超自己的阈值，第一层全部放行。但它们在 wire 上是<strong>同一条 user 消息</strong>，加起来 400K。源码注释原话是 <em>This prevents N parallel tools from each hitting the per-tool max and collectively producing e.g. 10 × 40K = 400K in one turn\'s user message</em>（<code>toolLimits.ts:35</code>）。<br><br>第三个选项说的是另一件事。历史累积由压缩管，每消息预算只看单条消息，两条各 150K 的消息都在预算内，谁也不动。',
+  },
+  {
+    q: '某个结果第一次检查时没超预算，所以没被替换。几轮之后预算被调小了，它现在超了。系统会替换它吗？',
+    options: [
+      '不会，它已经被冻结了',
+      '会，预算是随时生效的',
+      '会，但要等下一次压缩',
+    ],
+    answer: 0,
+    explain: '进了 <code>seenIds</code> 就冻结。理由不在这个结果本身，在<strong>它之前那些字节</strong>：上一轮发出去的是全文，这一轮改成预览，请求前缀就从这里断了，往后的缓存全部作废。省下的额度不够赔重新计费的。<br><br>源码里这句写得很清楚：<em>a mid-session flag change only affects FRESH messages</em>。你可以跑 <code>--stability</code> 直接看到这个对照，带状态那组 hash 四轮不动，不带状态那组在改预算的那一轮就变了。',
+  },
+  {
+    recall: true,
+    q: '不看上文，用自己的话写下来：「落盘」比「截断」好在哪，代价是什么？',
+    reveal: '<strong>好在改变的是寻址方式而不是信息量。</strong>截断把内容删了，模型再想看也没有；落盘之后全文一直在磁盘上，模型拿着路径可以自己 <code>read_file</code> 取回来。日常省下的是「可能不需要的完整信息」，真需要时一次读取就补回来了。<br><br><strong>代价有三样：</strong><br>① 要写磁盘，于是有了失败路径。落盘失败时源码选择原样返回全文，因为 <code>tool_use</code> 必须有配对的 <code>tool_result</code>，这条约束比省钱重要。<br>② 模型可能真的去读，那就多花一轮。所以预览要够大（2KB）、挑选要克制（够用就停），让它大多数时候不必读。<br>③ 落盘决定必须跨轮次稳定，于是多出 <code>seenIds</code> 和 <code>replacements</code> 两个状态字段，还得处理 resume、子 agent、fork 三种继承情况。<strong>这一层复杂度全部是缓存前缀逼出来的。</strong>',
+  },
+])
+</script>
+
+</body>
+</html>
