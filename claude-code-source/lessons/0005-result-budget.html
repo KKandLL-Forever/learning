@@ -318,7 +318,11 @@ sleep               50,000      50,000      50,000   已经顶到上限了
 
 <h3>动手三：把前缀稳定性量出来</h3>
 
-<p>光讲不够，这个实验能直接看到差别。同一段历史跑四轮，第 3 轮之前把预算从 200,000 调到 60,000（真实系统里就是改个特性开关），看历史消息的内容指纹变不变。</p>
+<p>先说清楚这个实验模拟的是什么，不然那四行输出容易误读。</p>
+
+<p>它<strong>不是</strong>一场越来越长的对话。它拿的是<em>同一条</em>历史消息（上一节那 8 个并行结果，232,256 字符），反复走 4 次预算，中途改一次预算值。表里的「第 N 轮」意思是<strong>这条消息第 N 次被发出去</strong>。</p>
+
+<p>内容一个字没变，变的只有预算值。这样才能把「决定会不会漂移」单独隔离出来。</p>
 
 <pre><code>bun run src/v4/main.ts --stability</code></pre>
 
@@ -334,12 +338,102 @@ sleep               50,000      50,000      50,000   已经顶到上限了
   第 3 轮  hash <span class="hl">fca65578d2</span>  新替 6 · 查表贴回 0  <span class="hl">前缀变了 → 缓存作废</span>
   第 4 轮  hash fca65578d2  新替 6 · 查表贴回 0  前缀不变</code></pre>
 
+<h4>带状态：第 3 轮根本没去比</h4>
+
+<p>最容易误会的是这里。预算调小了，但<strong>那次比较从来没发生过</strong>。</p>
+
+<p class="src-ref">mini-cc/src/v4/budget.ts · applyToolResultBudget</p>
+<pre><code>const { mustReapply, frozen, fresh } = partitionByPriorDecision(candidates, state)
+
+for (const c of mustReapply) replacementMap.set(c.toolUseId, c.replacement)
+
+<span class="cm">// 没有 fresh，说明这条消息之前处理过了，直接进下一条</span>
+<span class="hl">if (fresh.length === 0) {
+  candidates.forEach((c) =&gt; state.seenIds.add(c.toolUseId))
+  continue                     // ← limit 在这条路径上压根没被读</span>
+}</code></pre>
+
+<p>逐轮看 <code>state</code> 里装着什么：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:8%">轮</th><th style="width:14%">seenIds</th><th style="width:16%">replacements</th><th style="width:26%">分类结果</th><th>做了什么</th></tr></thead>
+<tbody>
+<tr><td><strong>1</strong></td><td>空</td><td>空</td><td>fresh 8 个</td><td>比一次：232,256 &gt; 200,000，换 2 个，把这 2 串字存进 <code>replacements</code></td></tr>
+<tr><td><strong>2</strong></td><td>8 个</td><td>2 个</td><td>mustReapply 2、frozen 6、<strong>fresh 0</strong></td><td><code>continue</code>。查表贴回 2 个</td></tr>
+<tr><td><strong>3</strong></td><td>8 个</td><td>2 个</td><td>同上，<strong>fresh 0</strong></td><td><code>continue</code>。<strong>预算是 60,000 还是 200,000，这条路径不关心</strong></td></tr>
+<tr><td><strong>4</strong></td><td>8 个</td><td>2 个</td><td>同上</td><td>同上</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>所以「预算调小了为什么没反应」的答案不是「它比了但忍住没动」，是<strong>它连比都没比</strong>。老消息走的是查表分支，新预算只对<em>从没见过的</em>结果生效。</p>
+
+<h4>不带状态：6 个是怎么算出来的</h4>
+
+<p>每轮给一个空 <code>state</code>，等于「不记得上一轮做过什么」。第 3 轮 8 个全是 fresh，于是真的去比了：</p>
+
+<pre><code>remaining = 232,256               <span class="cm">// 预算 60,000</span>
+换 1 个 → 203,224   还超
+换 2 个 → 174,192   还超
+换 3 个 → 145,160   还超
+换 4 个 → 116,128   还超
+换 5 个 →  87,096   还超
+<span class="hl">换 6 个 →  58,064   ≤ 60,000，停</span></code></pre>
+
+<p>6 个，和输出里的「新替 6」对上。第 1、2 轮只换了 2 个，第 3 轮变成 6 个，<strong>同一条消息的内容不一样了</strong>，hash 跟着变。</p>
+
+<div class="box box-real">
+  <p class="box-title">这个减法其实不准，源码知道</p>
+  <p>上面每次减的是<strong>全文体积</strong>（29,032），没把换上去的 2,178 字节预览加回来。实际结果是 <code>2 × 29,032 + 6 × 2,178 = 71,132</code>，其实还超着 60,000。</p>
+  <p style="margin-top:0.5rem">源码承认这是近似，理由是<em>预览大约 2K，而会走到这条路径的结果都比它大得多，所以直接减掉全文体积对挑选来说已经足够接近</em>：</p>
+  <p style="margin-top:0.3rem"><span class="src-quote">previews are ~2K and results hitting this path are much larger, so subtracting the full size is a close approximation for selection purposes</span></p>
+  <p style="margin-top:0.5rem">多算一轮换来的精度，不值得那点复杂度。<code>src/utils/toolResultStorage.ts:686</code>。</p>
+</div>
+
+<h4>hash 是怎么来的，它能说明什么</h4>
+
+<p>那一列指纹只有四行代码：</p>
+
+<p class="src-ref">mini-cc/src/v4/main.ts:222</p>
+<pre><code>function hashFirstMessage(messages: Message[]): string {
+  const first = messages.find((m) =&gt; m.role === 'user' &amp;&amp; typeof m.content !== 'string')!
+  const text = (first.content as ToolResultBlock[]).map((b) =&gt; b.content).join('')
+  return createHash('sha1').update(text).digest('hex').slice(0, 10)
+}</code></pre>
+
+<p>找到第一条带工具结果的 user 消息（<code>typeof m.content !== 'string'</code> 是在筛掉普通文字消息，那种 <code>content</code> 是字符串），把 8 个 <code>tool_result</code> 的内容首尾相接，算 SHA-1，取前 10 位。取 10 位是因为 40 位十六进制在终端里没法扫读，而 4 次对比撞车的概率可以忽略。</p>
+
+<p><strong>关键性质：变一个 bit 就全变。</strong>这是哈希的雪崩效应，不是「变得多就差得多」。实测：</p>
+
+<pre><code>原文          e9efc0a566b54a92637bc5e79577a4c1f3dd8991
+改一个字符    c9f49f5b21b7000d1c01dced206b7cc91b546949   <span class="cm">// 2ms 改成 3ms</span>
+末尾加空格    84d5f4e3b601a2c9843aae877b6087d0a3595fd0
+完全不同      11f6ad8ec52a2984abaafd7c3b516503785c2072   <span class="cm">// 内容只有一个 "x"</span></code></pre>
+
+<p>「改一个字符」和「完全不同」这两行，跟原文的差距<em>一样大</em>。看不出「只改了一点点」。</p>
+
+<div class="box box-trap">
+  <p class="box-title">这个指纹看不见位置，而缓存很在乎位置</p>
+  <p>对前缀缓存来说，「变没变」确实就是全部：变一个字符和改半篇内容，后果同样是那一处往后作废。所以拿 hash 当探针够用。</p>
+  <p style="margin-top:0.5rem">但它答不了「变在哪儿」，而这件事对成本影响很大：</p>
+  <pre style="margin-top:0.5rem"><code>历史：[消息1][消息2][消息3][消息4][消息5]
+            <span class="hl">↑ 改这里 → 消息 2 往后全废，只保住消息 1</span>
+                              ↑ 改这里 → 前 4 条都保住</code></pre>
+  <p style="margin-top:0.5rem">同样是改一个字符，改在开头和改在末尾，损失差着数量级。这个实验只有一条消息，所以看不出来。<strong>下一课讲 <code>cache_control</code> 断点放在哪儿，讲的就是这件事。</strong></p>
+</div>
+
 <div class="box box-why">
-  <p class="box-title">读这张表</p>
-  <p>盯 hash 那一列。它是第一条 user 消息里所有 <code>tool_result</code> 内容拼起来的指纹。</p>
-  <p style="margin-top:0.5rem"><strong>带状态</strong>：预算怎么改，那条历史消息一个字节都没动。因为老决定走的是「查表贴回去」，根本没重新判断。</p>
-  <p style="margin-top:0.5rem"><strong>不带状态</strong>：预算一改，同一条历史消息重新算了一遍，这次它超了 60,000，于是多替了 4 个。hash 变了，那一处往后的缓存全废。</p>
-  <p style="margin-top:0.5rem">「新替 / 查表贴回」这两个数字也值得看。带状态那边从第 2 轮起就是 <code>0 / 2</code>，说明预算模块每轮做的事情越来越少，只是把老账贴回去。</p>
+  <p class="box-title">别把 hash 当成系统里的机制</p>
+  <p>它是<strong>我们的测量工具</strong>，源码里没有这东西。真实的 prefix cache 逐 token 比对前缀，能给出「命中了 8000 个 token」这种<em>带位置</em>的答案。</p>
+  <p style="margin-top:0.5rem">这里用 sha1 只是因为：两个 178KB 的字符串摆在终端里你看不出所以然，两串 10 位十六进制一眼就知道。</p>
+</div>
+
+<div class="box box-why">
+  <p class="box-title">回到那张表</p>
+  <p><strong>带状态</strong>：预算怎么改，那条历史消息一个字节都没动，因为老决定走的是查表分支。</p>
+  <p style="margin-top:0.5rem"><strong>不带状态</strong>：预算一改就重算，替换个数从 2 变 6，hash 跟着变，那一处往后的缓存全废。</p>
+  <p style="margin-top:0.5rem">「新替 / 查表贴回」这两个数字同样值得看。带状态那边从第 2 轮起恒为 <code>0 / 2</code>，说明预算模块随着会话变长做的事越来越少，只是把老账贴回去。</p>
 </div>
 
 <h2>一个补丁，讲的是别的事</h2>
