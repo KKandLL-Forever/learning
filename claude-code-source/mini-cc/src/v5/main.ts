@@ -1,19 +1,31 @@
 /**
- * mini-cc v4 —— 驱动程序
+ * mini-cc v5 —— 驱动程序
  *
- * 运行：
- *   bun run src/v4/main.ts --thresholds    每个工具的实际落盘阈值
- *   bun run src/v4/main.ts --budget        第一层：单个结果太大
- *   bun run src/v4/main.ts --aggregate     第二层：一条消息里加起来太大
- *   bun run src/v4/main.ts --stability     冻结：为什么判过就不再改判
- *   bun run src/v4/main.ts --matrix        权限矩阵（第 0004 课）
- *   bun run src/v4/main.ts --trace         权限走廊（第 0004 课）
- *   bun run src/v4/main.ts "跑一下测试"     正常跑一遍 agent
+ * 本课（0006）：
+ *   bun run src/v5/main.ts --cache         逐轮看命中率和花费
+ *   bun run src/v5/main.ts --break         六种改动，各自打穿多少
+ *
+ * 往期：
+ *   bun run src/v5/main.ts --thresholds    每个工具的实际落盘阈值（0005）
+ *   bun run src/v5/main.ts --budget        第一层：单个结果太大（0005）
+ *   bun run src/v5/main.ts --aggregate     第二层：一条消息里加起来太大（0005）
+ *   bun run src/v5/main.ts --stability     冻结：为什么判过就不再改判（0005）
+ *   bun run src/v5/main.ts --matrix        权限矩阵（0004）
+ *   bun run src/v5/main.ts --trace         权限走廊（0004）
+ *   bun run src/v5/main.ts "跑一下测试"     正常跑一遍 agent
  */
 
 import { createHash } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import {
+  BYTES_PER_TOKEN,
+  CACHE_BLOCK_TOKENS,
+  createCacheObserver,
+  PRICE_PER_MTOK,
+  serializeRequest,
+  simulateCache,
+} from './cache.js'
 import {
   applyToolResultBudget,
   createContentReplacementState,
@@ -24,7 +36,7 @@ import {
   maybePersistLargeToolResult,
 } from './budget.js'
 import { query } from './loop.js'
-import { pickModel } from './model.js'
+import { CACHE_SCRIPT, createMockModel, DEFAULT_MODEL, pickModel } from './model.js'
 import { canUseTool } from './permissions.js'
 import { TOOLS } from './tools.js'
 import type {
@@ -273,6 +285,225 @@ async function demoStability() {
   console.log(`${DIM}这就是 seenIds 和 replacements 这两个字段存在的全部理由。${RESET}`)
 }
 
+// ══════════════════════════════════════════════════════════
+//  第 0006 课：前缀缓存
+// ══════════════════════════════════════════════════════════
+
+function yuan(n: number): string {
+  return `¥${n.toFixed(4)}`
+}
+
+/**
+ * 演示用的长系统提示词。
+ *
+ * 真实的 Claude Code 系统提示词上万 token，这里凑到约 1500 token，
+ * 目的是让「改动落在 system 里」和「落在工具区」的后果能区分开。
+ * 系统提示词短的话，两者都会归零，看不出层次。
+ */
+const LONG_SYSTEM = [
+  SYSTEM,
+  ...Array.from(
+    { length: 40 },
+    (_, i) =>
+      `规则 ${i + 1}：回答保持简洁，先给结论再给依据；` +
+      `涉及文件改动时先说清楚要改哪里、为什么改；` +
+      `不确定的地方明确说不确定，不要编造路径或行号。`,
+  ),
+].join('\n\n')
+
+/** 造一段有分量的历史，好让命中数字看得出层次。 */
+function buildHistory(): Message[] {
+  const log = (tag: string, n: number) =>
+    Array.from(
+      { length: n },
+      (_, i) => `[${String(i + 1).padStart(5, '0')}] ${tag} · case_${i + 1} ... ok (${(i % 37) + 1}ms)`,
+    ).join('\n')
+
+  return [
+    { role: 'user', content: '帮我跑一下测试，然后看看目录结构' },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '我先跑测试。' },
+        { type: 'tool_use', id: 'c1', name: 'run_tests', input: { suite: 'unit', lines: 600 } },
+      ],
+    },
+    {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'c1', content: log('unit', 600) }],
+    },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '测试过了，看下目录。' },
+        { type: 'tool_use', id: 'c2', name: 'run_tests', input: { suite: 'e2e', lines: 600 } },
+      ],
+    },
+    {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'c2', content: log('e2e', 600) }],
+    },
+  ]
+}
+
+/**
+ * 六种改动，各自打穿多少。
+ *
+ * 这个演示要说明的不是「改了就打穿」，而是【改在哪儿决定了赔多少】。
+ * 前缀是从第一个字节开始比的，所以越靠前的改动越贵。
+ */
+async function demoBreak() {
+  console.log(`${BOLD}同样是改一处，改在哪儿决定赔多少${RESET}`)
+  console.log(`${DIM}请求在 wire 上的顺序是固定的：system → tools → messages。${RESET}`)
+  console.log(`${DIM}前缀从第一个字节开始比，所以越靠前的改动，后面作废得越多。${RESET}\n`)
+
+  const messages = buildHistory()
+  const base = serializeRequest(LONG_SYSTEM, TOOLS, messages)
+  const baseStats = simulateCache(base, base)
+
+  const first = TOOLS[0]!.name
+  const last = TOOLS[TOOLS.length - 1]!.name
+  const tweak = (name: string) =>
+    TOOLS.map((t) => (t.name === name ? { ...t, description: `${t.description} ` } : t))
+
+  const inserted: Message[] = [
+    ...messages.slice(0, 3),
+    { role: 'user', content: '（插进来的一句话）' },
+    ...messages.slice(3),
+  ]
+  // 和上面那条【插入的内容完全一样】，只是位置在末尾。
+  // 这一对是整张表的重点：同样的操作，位置不同，代价差着数量级。
+  const appended: Message[] = [
+    ...messages,
+    { role: 'user', content: '（插进来的一句话）' },
+  ]
+
+  const cases: Array<{ label: string; where: string; wire: string }> = [
+    { label: '什么都不改', where: '—', wire: base },
+    { label: '系统提示词改一个字', where: '最前面', wire: serializeRequest(LONG_SYSTEM.replace('你是', '你就是'), TOOLS, messages) },
+    { label: `第一个工具（${first}）描述多个空格`, where: '工具区开头', wire: serializeRequest(LONG_SYSTEM, tweak(first), messages) },
+    { label: `最后一个工具（${last}）描述多个空格`, where: '工具区末尾', wire: serializeRequest(LONG_SYSTEM, tweak(last), messages) },
+    { label: '同一句话插在历史中间', where: '消息区中段', wire: serializeRequest(LONG_SYSTEM, TOOLS, inserted) },
+    { label: '同一句话加在历史末尾', where: '最末尾', wire: serializeRequest(LONG_SYSTEM, TOOLS, appended) },
+  ]
+
+  const w = [40, 14, 12, 12, 12]
+  console.log(
+    `${DIM}${padTo('改动', w[0]!)}${padTo('改在哪', w[1]!)}${padLeft('命中', w[2]!)}${padLeft('未命中', w[3]!)}${padLeft('本次花费', w[4]!)}   多花${RESET}`,
+  )
+
+  for (const c of cases) {
+    const s = simulateCache(base, c.wire)
+    const extra = s.cost - baseStats.cost
+    const color = extra <= 0 ? GREEN : extra < baseStats.costWithoutCache * 0.3 ? YELLOW : RED
+    console.log(
+      padTo(c.label, w[0]!) +
+        `${DIM}${padTo(c.where, w[1]!)}${RESET}` +
+        `${color}${padLeft(num(s.hitTokens), w[2]!)}${RESET}` +
+        padLeft(num(s.missTokens), w[3]!) +
+        padLeft(yuan(s.cost), w[4]!) +
+        `   ${color}${extra <= 0 ? '—' : '+' + yuan(extra)}${RESET}`,
+    )
+  }
+
+  console.log()
+  console.log(`${YELLOW}最后两行放在一起看。${RESET}${DIM}同样是改一处内容，插在中间和加在末尾，代价差着数量级。${RESET}`)
+  console.log(`${DIM}这就是「历史一旦发出去就别再动」的由来，也是第 0005 课冻结语义的全部理由。${RESET}`)
+  console.log()
+  console.log(`${DIM}注：命中按 ${CACHE_BLOCK_TOKENS} token 一块向下取整，${BYTES_PER_TOKEN} 个字符粗算 1 个 token（中文会低估，只求量级）。${RESET}`)
+  console.log(`${DIM}    价格用 DeepSeek V4-Flash：命中 ¥${PRICE_PER_MTOK.hit}/M，未命中 ¥${PRICE_PER_MTOK.miss}/M，差 ${PRICE_PER_MTOK.miss / PRICE_PER_MTOK.hit} 倍。${RESET}`)
+
+  // ── 第二半：让侦测器说出是谁干的 ──────────────────────
+  console.log(`\n${BOLD}那么，谁打穿的${RESET}`)
+  console.log(`${DIM}账单只告诉你命中掉了，不告诉你为什么。这一半模拟真实源码那 727 行在做的事。${RESET}\n`)
+
+  const observer = createCacheObserver(DEFAULT_MODEL)
+  const steps: Array<{ label: string; system: string; tools: typeof TOOLS }> = [
+    { label: '第 1 次请求', system: LONG_SYSTEM, tools: TOOLS },
+    { label: '第 2 次请求，什么都没改', system: LONG_SYSTEM, tools: TOOLS },
+    { label: `第 3 次请求，${last} 的描述被改了`, system: LONG_SYSTEM, tools: tweak(last) },
+    { label: '第 4 次请求，改回去了', system: LONG_SYSTEM, tools: TOOLS },
+  ]
+
+  for (const s of steps) {
+    const { stats, broke } = observer.observe(s.system, s.tools, messages)
+    const rate = `${(stats.hitRate * 100).toFixed(0)}%`
+    console.log(
+      `${padTo(s.label, 38)}${DIM}命中 ${RESET}${padLeft(num(stats.hitTokens), 8)}${DIM} / ${num(stats.totalTokens)}  (${rate})${RESET}`,
+    )
+    if (broke) {
+      console.log(`  ${RED}⚡ 打穿了${RESET} ${DIM}掉 ${num(broke.drop)} token：${RESET}${YELLOW}${broke.reasons.join('；')}${RESET}`)
+    }
+  }
+
+  console.log()
+  console.log(`${YELLOW}第 4 次值得多看两眼。${RESET}${DIM}描述改回去了，命中却还是 832，一分钱没省回来。${RESET}`)
+  console.log(`${DIM}因为上次写进缓存的是「改过的版本」，改回去只是又一次不一样。缓存不认对错，只认和上次一不一样。${RESET}`)
+  console.log()
+  console.log(`${YELLOW}而侦测器这一次没报警。${RESET}${DIM}它盯的是「命中比上次掉了」，第 4 次没再往下掉，所以它闭嘴了。${RESET}`)
+  console.log(`${DIM}这是这类侦测的固有盲区：它抓得住【变坏的那一刻】，抓不住【一直很坏】。${RESET}`)
+}
+
+/** 跑一遍 agent，逐轮把缓存的账打出来。 */
+async function demoCache() {
+  console.log(`${BOLD}逐轮看命中率${RESET}`)
+  console.log(`${DIM}历史越长，前缀里能复用的部分越多。第一轮必然全价，缓存要先写进去。${RESET}\n`)
+
+  await rm(join(process.cwd(), '.mini-cc'), { recursive: true, force: true })
+
+  // 没有 key 时用专门的剧本：每轮只加一点点内容，好看清命中率的走势。
+  const real = pickModel()
+  const usingMock = real.label.startsWith('Mock')
+  const model = usingMock ? createMockModel(CACHE_SCRIPT) : real.model
+  console.log(`${DIM}模型来源：${usingMock ? 'Mock 剧本（缓存专用）' : real.label}${RESET}`)
+  console.log(`${DIM}系统提示词：${num(Math.ceil(LONG_SYSTEM.length / BYTES_PER_TOKEN))} token（真实的 Claude Code 上万）${RESET}\n`)
+
+  const generator = query({
+    messages: [{ role: 'user', content: '看看这个项目' }],
+    system: LONG_SYSTEM,
+    tools: TOOLS,
+    model,
+    maxTurns: 10,
+    permissions: makeContext('default'),
+    budgetState: createContentReplacementState(),
+    observeCache: { model: DEFAULT_MODEL },
+  })
+
+  let totalCost = 0
+  let totalWithout = 0
+  console.log(
+    `${DIM}${padTo('轮', 6)}${padLeft('总 token', 12)}${padLeft('命中', 10)}${padLeft('命中率', 10)}${padLeft('花费', 12)}${padLeft('不缓存要花', 14)}${RESET}`,
+  )
+
+  let result = await generator.next()
+  while (!result.done) {
+    const event = result.value
+    if (event.type === 'cache') {
+      const s = event.stats
+      totalCost += s.cost
+      totalWithout += s.costWithoutCache
+      const color = s.hitRate > 0.5 ? GREEN : s.hitRate > 0 ? YELLOW : DIM
+      console.log(
+        padTo(String(event.turn), 6) +
+          padLeft(num(s.totalTokens), 12) +
+          `${color}${padLeft(num(s.hitTokens), 10)}${RESET}` +
+          `${color}${padLeft((s.hitRate * 100).toFixed(0) + '%', 10)}${RESET}` +
+          padLeft(yuan(s.cost), 12) +
+          `${DIM}${padLeft(yuan(s.costWithoutCache), 14)}${RESET}`,
+      )
+    } else if (event.type === 'cache_break') {
+      console.log(`      ${RED}⚡ 缓存被打穿${RESET} ${DIM}掉了 ${num(event.report.drop)} token：${event.report.reasons.join('；')}${RESET}`)
+    }
+    result = await generator.next()
+  }
+
+  console.log()
+  console.log(`${BOLD}合计${RESET} ${yuan(totalCost)}${DIM}，不用缓存要 ${yuan(totalWithout)}，省了 ${((1 - totalCost / totalWithout) * 100).toFixed(0)}%${RESET}`)
+  console.log()
+  console.log(`${YELLOW}注意第 1 轮命中是 0。${RESET}${DIM}缓存要先写进去才谈得上命中，第一次一定全价。${RESET}`)
+  console.log(`${DIM}这也是为什么「每轮都发完整历史」听着浪费，实际账单没那么难看。${RESET}`)
+}
+
 // ── 权限演示（第 0004 课，原样保留）──────────────────────
 
 const CASES = [
@@ -395,6 +626,8 @@ async function runAgent(mode: PermissionMode) {
 async function main() {
   const args = process.argv.slice(2)
 
+  if (args.includes('--cache')) return demoCache()
+  if (args.includes('--break')) return demoBreak()
   if (args.includes('--thresholds')) return printThresholds()
   if (args.includes('--budget')) return demoPerTool()
   if (args.includes('--aggregate')) return demoAggregate()

@@ -10,6 +10,7 @@
     "v2": "bun run src/v2/main.ts",
     "v3": "bun run src/v3/main.ts",
     "v4": "bun run src/v4/main.ts",
+    "v5": "bun run src/v5/main.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

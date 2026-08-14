@@ -195,9 +195,26 @@
 <dt>前缀匹配<span class="en">prefix matching</span><span class="ch">05</span></dt>
 <dd>缓存匹配的是「从第一个字节开始的连续一段」，不是「内容相似」。残酷后果：<strong>越靠前的内容改动，代价越大</strong>。system prompt 里一个字符变了（哪怕 "saved 3 days ago" → "4 days ago"），后面全部作废。</dd>
 
-<dt>缓存击穿<span class="en">cache break</span><span class="ch">05</span></dt>
-<dd>缓存没命中。API 只告诉你「这次重新算了」，不告诉你为什么。所以有一个 534 行的模块做<strong>事后归因</strong>：对 system 块做两份哈希（剥掉 / 保留 <code>cache_control</code>），分别检测内容变化与 scope/TTL 翻转。
-<span class="where">src/services/api/promptCacheBreakDetection.ts</span></dd>
+<dt>缓存打穿<span class="en">cache break</span><span class="ch">05 · 06</span></dt>
+<dd>缓存没命中。API 只告诉你「这次重新算了」，不告诉你为什么。所以有一个 <strong>727 行</strong>的模块做<strong>事后归因</strong>：对 system 块做两份哈希（剥掉 / 保留 <code>cache_control</code>），分别检测内容变化与 scope/TTL 翻转。判据是掉幅 &gt;5% <strong>且</strong>绝对量 &gt; 2000 token，两个条件在滤两种不同的噪音。
+<span class="where">src/services/api/promptCacheBreakDetection.ts（727 行）</span></dd>
+
+<dt>两阶段侦测<span class="en">先看结果，再找原因</span><span class="ch">06</span></dt>
+<dd>请求<strong>前</strong>给所有「本来不该变」的东西记 hash，请求<strong>后</strong>先看命中掉没掉，掉了才回头翻指纹。顺序不能反：变了不等于打穿（可能变在最后，可能这次本来就是首次调用），<em>指纹是用来解释事实的，不是用来预测的</em>。
+它的盲区是只盯「比上次掉了」，所以抓得住变坏的那一刻，抓不住一直很坏。
+<span class="where">promptCacheBreakDetection.ts:437 checkResponseForCacheBreak()</span></dd>
+
+<dt>PreviousState 的 20 个字段<span class="en">一份事故清单</span><span class="ch">06</span></dt>
+<dd>侦测器记录的东西：每个工具的 schema 哈希（<strong>工具没增没减但描述变了，占工具类打穿的 77%</strong>）、带 <code>cache_control</code> 的哈希（抓 scope/TTL 翻转）、模型、beta 头、特性开关、effort、额度状态。其中三个字段的注释写着「不该再打穿了」，<strong>它们是已修复 bug 的回归哨兵</strong>。
+<span class="where">promptCacheBreakDetection.ts:28</span></dd>
+
+<dt>cache scope<span class="en">global / org / null</span><span class="ch">06</span></dt>
+<dd>这份缓存<strong>谁能复用</strong>。<code>global</code> 跨用户（写死在代码里的系统提示词，全世界一样），<code>org</code> 跨组织，<code>null</code> 不缓存（用户名、当前目录、时间）。切分靠哨兵字符串 <code>SYSTEM_PROMPT_DYNAMIC_BOUNDARY</code>，它<strong>只是数组里的一个普通字符串</strong>，插错位置静态区就混进动态内容，缓存范围默默缩水且不报错。
+<span class="where">src/utils/api.ts:321 splitSysPromptPrefix() · src/constants/prompts.ts:114</span></dd>
+
+<dt>TTL latch<span class="en">稳定优先于正确</span><span class="ch">06</span></dt>
+<dd>1h TTL 的资格取决于额度状态，而额度<strong>会在会话中途翻转</strong>。TTL 写在 <code>cache_control</code> 里属于请求内容，一变就打穿（注释说约 2 万 token 一次）。所以源码把资格锁进进程状态，整个会话只算一次。<strong>一个本来正确的动态值，因为会变，被故意冻住了。</strong>和 <code>ContentReplacementState</code> 的冻结是同一个手法。
+<span class="where">src/services/api/claude.ts:404 should1hCacheTTL()</span></dd>
 
 <dt>断点上限 4<span class="en">cache breakpoints</span><span class="ch">05 · 06</span></dt>
 <dd>每次请求最多 4 个 <code>cache_control</code>。分配：system 块末尾一个、工具清单末尾一个、消息历史里一个（会移动）。<strong>超了 API 直接 400</strong>，这就是源码里那句 <code>Do not add any more blocks for caching or you will get a 400</code> 的由来。</dd>

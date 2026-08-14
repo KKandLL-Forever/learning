@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第 0006 课 · Prompt Caching：前缀在保护什么</title>
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body>
+
+<p class="lesson-meta">第 0006 课 · Claude Code 源码架构</p>
+<h1>Prompt Caching</h1>
+<p class="lesson-sub">上一课反复出现的那句「前缀不能变」，理由一直没展开。这一课把缓存本身摊开：它怎么算命中，改一个字符要赔多少，以及为什么这个代码库要专门写 727 行来找是谁打穿的。</p>
+
+<div class="box box-do">
+  <p class="box-title">这节课结束时你会有</p>
+  <ul>
+    <li><code>mini-cc v5</code>：一个本地的前缀缓存模拟器，能把「命中到第几个 token」和「这一轮花了多少钱」直接打出来（<code>--cache</code>）</li>
+    <li>一张实测的表：同样改一处，改在 system、工具区、消息中段、消息末尾，代价差着两个数量级（<code>--break</code>）</li>
+    <li>一个会说出「是谁打穿的」的侦测器，以及它抓不到的那类情况</li>
+    <li>两种 provider 设计的对照：DeepSeek 全自动，Claude 手动标断点，各自换来什么</li>
+  </ul>
+</div>
+
+<div class="box box-real">
+  <p class="box-title">开始之前 · Node 标准库</p>
+  <p>本课没有新的。上一课的 <code>node:crypto</code> 的 <code>createHash</code> 继续用，这次拿它给系统提示词和工具 schema 各算一个指纹，用来回答「这一轮和上一轮是不是同一份」。</p>
+</div>
+
+<h2>一个只能看、不能碰的东西</h2>
+
+<p>到目前为止这门课里的每样东西都在你手上。循环是你写的，工具是你注册的，权限顺序是你排的，预算阈值是你定的。</p>
+
+<p>缓存不是。它整个发生在服务端，客户端能拿到的只有账单上那两个数字：</p>
+
+<pre><code><span class="cm">// DeepSeek 响应的 usage 字段</span>
+{
+  "prompt_cache_hit_tokens": 12416,
+  "prompt_cache_miss_tokens": 7
+}</code></pre>
+
+<p>但「为什么没命中」完全是客户端的事，因为前缀是客户端拼出来的。<strong>这是一个你只能观测结果、却要为原因负责的系统。</strong>本课大半篇幅都在处理这个错位。</p>
+
+<h3>先看清楚这两个数字值多少钱</h3>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:30%">DeepSeek V4-Flash</th><th style="width:24%">元 / 百万 token</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>输入 · 缓存命中</td><td><code>0.02</code></td><td>服务端直接复用，几乎白送</td></tr>
+<tr><td>输入 · 缓存未命中</td><td><code>1</code></td><td><strong>50 倍</strong></td></tr>
+<tr><td>输出</td><td><code>2</code></td><td>和缓存无关</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>倍数才是重点，绝对值会变（官方公告 2026 年 8 月 17 日起改成分时定价，倍数降到 30 上下）。<strong>50 倍意味着：命中率从 90% 掉到 0，这一轮的输入成本涨 10 倍不止。</strong></p>
+
+<h2>动手一：逐轮看命中率</h2>
+
+<pre><code>cd D:\code\learning\claude-code-source\mini-cc
+bun run src/v5/main.ts --cache</code></pre>
+
+<p><code>v5</code> 新增了一个本地模拟器：把这一轮真正要发出去的字节拼出来，和上一轮比最长公共前缀，按 DeepSeek 的价目算钱。</p>
+
+<pre><code>系统提示词：700 token（真实的 Claude Code 上万）
+
+轮        总 token      命中    命中率        花费    不缓存要花
+1              904         0        0%     ¥0.0009       ¥0.0009
+2              963       896       93%     ¥0.0001       ¥0.0010
+3            1,016       960       94%     ¥0.0001       ¥0.0010
+4            1,096       960       88%     ¥0.0002       ¥0.0011
+5            1,332     1,088       82%     ¥0.0003       ¥0.0013
+6            1,384     1,280       92%     ¥0.0001       ¥0.0014
+
+<span class="hl">合计 ¥0.0016，不用缓存要 ¥0.0067，省了 76%</span></code></pre>
+
+<div class="box box-why">
+  <p class="box-title">这张表里有三件事</p>
+  <p><strong>第 1 轮命中必然是 0。</strong>缓存要先写进去才谈得上命中。所以任何「第一次请求就该便宜」的期待都是错的，缓存优化的是<em>第二次之后</em>。</p>
+  <p style="margin-top:0.5rem"><strong>命中率不是单调上升的。</strong>第 4、5 轮掉下去了，因为那两轮的工具结果比较大，新增内容占的比例高。分母变大，命中率就被稀释。</p>
+  <p style="margin-top:0.5rem"><strong>「每轮都重发完整历史」听着浪费，账单没那么难看。</strong>第 0001 课立的那个事实到这里终于有了对价：重发的那部分几乎都是命中的，按 2% 的价钱算。</p>
+</div>
+
+<h2>前缀是什么：从第一个字节开始比</h2>
+
+<p>「前缀缓存」这四个字要拆开看。它比的<strong>不是</strong>「内容相似度」，而是<strong>从第一个字节开始，连续相同到第几个字节</strong>。中间任何一处不一样，从那里往后全部作废。</p>
+
+<p>而请求在 wire 上的顺序是固定的：</p>
+
+<pre><code>┌──────────┬───────────────┬────────────────────────────┐
+│  system  │     tools     │          messages          │
+└──────────┴───────────────┴────────────────────────────┘
+     ↑             ↑            ↑                    ↑
+   改这里       改这里        改这里              改这里
+   全废        后面全废      后面的废            几乎不疼</code></pre>
+
+<p>这个不对称是整节课的核心。<strong>越靠前的东西越不能动，而越靠前的东西恰好越像「配置」，看着最无害。</strong></p>
+
+<h3>动手二：改一处，看赔多少</h3>
+
+<pre><code>bun run src/v5/main.ts --break</code></pre>
+
+<pre><code>改动                                    改在哪                命中      未命中    本次花费   多花
+什么都不改                              —                  12,416           7     ¥0.0003   —
+<span class="hl">系统提示词改一个字                      最前面                  0      12,423     ¥0.0124   +¥0.0122</span>
+第一个工具（read_file）描述多个空格     工具区开头            704      11,719     ¥0.0117   +¥0.0115
+最后一个工具（run_tests）描述多个空格   工具区末尾            832      11,591     ¥0.0116   +¥0.0114
+<span class="hl">同一句话插在历史中间                    消息区中段          6,720       5,706     ¥0.0058   +¥0.0056</span>
+<span class="hl">同一句话加在历史末尾                    最末尾             12,416          10     ¥0.0003   +¥0.0000</span></code></pre>
+
+<div class="box box-why">
+  <p class="box-title">最后两行是同一个操作</p>
+  <p>插进去的是<em>同一句话</em>，字都一样。区别只有位置：一个在历史中段，一个在末尾。</p>
+  <p style="margin-top:0.5rem">中段那次多花 <code>¥0.0056</code>，末尾那次多花 <code>¥0.0000</code>。<strong>差了将近二十倍，而这还只是一条 12K token 的历史。</strong>真实会话动辄几十万 token，比例只会更悬殊。</p>
+  <p style="margin-top:0.5rem">这就是第 0005 课那条冻结规矩的全部理由。<em>「已经发出去的历史别再动」不是洁癖，是这张表。</em></p>
+</div>
+
+<p>顺带解释一下为什么「什么都不改」那行的未命中不是 0。缓存以块为单位，不是逐字节，命中长度要向下取整到块边界。差一个 token 也用不上那个块。<code>mini-cc</code> 取 64 token 一块，DeepSeek 文档只说「以一定的 token 数量为间隔」没公布具体值，Anthropic 那边有个按模型定的最小可缓存长度（1024 或 2048 token）。</p>
+
+<div class="box box-trap">
+  <p class="box-title">这条规矩最容易被什么绊倒</p>
+  <p>系统提示词里塞时间戳、把工具列表按 <code>Object.keys()</code> 的顺序拼、根据当前分支名动态改一句提示。这些改动全都落在最前面，全都看着人畜无害。</p>
+  <p style="margin-top:0.5rem">真实源码里 <code>AgentTool</code> 和 <code>SkillTool</code> 的 <code>description</code> 就嵌着动态生成的清单（有哪些子 agent、有哪些命令）。所以它们的 schema 会跟着环境变，而工具区排在消息前面。</p>
+</div>
+
+<h2>谁打穿的：一个两阶段的侦探</h2>
+
+<p>账单只说命中掉了，不说为什么。这个代码库为此单独写了一个模块：</p>
+
+<p class="src-ref">src/services/api/promptCacheBreakDetection.ts · 727 行</p>
+
+<p>它的做法分两步，<strong>而这两步的先后是有讲究的</strong>。</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:20%">阶段</th><th style="width:24%">什么时候</th><th>做什么</th></tr></thead>
+<tbody>
+<tr><td><strong>Phase 1</strong></td><td>请求发出<em>之前</em></td><td>把所有「本来不该变」的东西各记一个 hash：system、每个工具的 schema、模型名、beta 头、特性开关、effort 配置……</td></tr>
+<tr><td><strong>Phase 2</strong></td><td>响应回来<em>之后</em></td><td>先看命中有没有掉。掉了，才回头翻 Phase 1 记的那些指纹，找出是谁变了</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box box-why">
+  <p class="box-title">为什么不能一发现 system 变了就报警</p>
+  <p>因为<strong>变了不等于打穿</strong>。变在最后、这次本来就是首次调用、或者变的那块根本没打缓存标记，都不会有损失。</p>
+  <p style="margin-top:0.5rem">先看结果再找原因，顺序反过来就是一个天天误报的告警。<em>指纹是用来解释事实的，不是用来预测的。</em></p>
+</div>
+
+<h3>判据：两个条件都要</h3>
+
+<p class="src-ref">src/services/api/promptCacheBreakDetection.ts:484 · 源码注释原文</p>
+<pre><code><span class="cm">// Detect a cache break: cache read dropped &gt;5% from previous AND
+// the absolute drop exceeds the minimum threshold.</span>
+
+if (cacheReadTokens &gt;= prevCacheRead * 0.95 || tokenDrop &lt; MIN_CACHE_MISS_TOKENS) {
+  state.pendingChanges = null
+  return
+}</code></pre>
+
+<p>意思是：命中比上次<strong>掉了超过 5%</strong>，<strong>并且</strong>掉的绝对量超过下限（<code>MIN_CACHE_MISS_TOKENS = 2_000</code>），两个条件都满足才算打穿。</p>
+
+<p>只看比例的话，小会话里一点抖动就报警；只看绝对量的话，大会话里掉 3% 也有好几千 token，天天报警。<strong>两个条件是在过滤两种不同的噪音。</strong></p>
+
+<h3>它记了什么</h3>
+
+<p>那个 <code>PreviousState</code> 有 20 个字段（<code>promptCacheBreakDetection.ts:28</code>）。挑几个能看出门道的：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:28%">字段</th><th>它为什么在这儿</th></tr></thead>
+<tbody>
+<tr><td><code>perToolHashes</code></td><td>每个工具的 schema 单独记一份。<strong>工具没增没减但描述变了，占了工具类打穿的 77%</strong>（源码注释里 <code>BQ 2026-03-22</code> 的数据）</td></tr>
+<tr><td><code>cacheControlHash</code></td><td>带着 <code>cache_control</code> 标记一起算的 hash。专门抓 scope 和 TTL 的翻转（global↔org、1h↔5m），这类变化会被普通的 systemHash 抹掉</td></tr>
+<tr><td><code>autoModeActive</code><br><code>isUsingOverage</code><br><code>cachedMCEnabled</code></td><td>这三个的注释都写着<em>不该再打穿缓存了</em>（<span class="src-quote">should NOT break cache anymore</span>）。它们是<strong>已经修好的 bug，留在这儿是为了验证修复没有回退</strong></td></tr>
+<tr><td><code>cacheDeletionsPending</code></td><td>压缩会主动删掉缓存的一部分，命中掉下去是<em>预期内</em>的。这个标志让侦测器闭嘴，避免把正常行为报成事故</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>这张字段表其实是一份事故清单。<strong>每一个字段背后都是一次真的打穿过缓存的改动。</strong></p>
+
+<h3>动手二的后半段：让它说话</h3>
+
+<p><code>--break</code> 的第二部分跑了四次请求，第 3 次偷偷改一个工具的描述：</p>
+
+<pre><code>第 1 次请求                           命中        0 / 12,423  (0%)
+第 2 次请求，什么都没改               命中   12,416 / 12,423  (100%)
+第 3 次请求，run_tests 的描述被改了   命中      832 / 12,423  (7%)
+  <span class="hl">⚡ 打穿了 掉 11,584 token：工具描述变了：run_tests</span>
+第 4 次请求，改回去了                 命中      832 / 12,423  (7%)</code></pre>
+
+<div class="box box-trap">
+  <p class="box-title">第 4 次值得多看两眼</p>
+  <p>描述<strong>改回去了</strong>，命中却还是 832，一分钱没省回来。</p>
+  <p style="margin-top:0.5rem">因为上一次写进缓存的是「改过的版本」。改回去只是又一次<em>和上次不一样</em>。缓存不认对错，只认和上次一不一样。</p>
+  <p style="margin-top:0.5rem">而且侦测器这一次<strong>没报警</strong>，因为它盯的是「比上次掉了」，第 4 次没再往下掉。<em>这类侦测抓得住变坏的那一刻，抓不住一直很坏。</em>要发现后者，得看命中率的绝对水平，那是另一套指标。</p>
+</div>
+
+<h2>手动断点：Claude 那边多出来的一层</h2>
+
+<p>到这里为止讲的都是 DeepSeek 也适用的东西。接下来这一段 <code>mini-cc</code> 复现不了，因为<strong>DeepSeek 的缓存是全自动的</strong>：</p>
+
+<div class="box box-real">
+  <p class="box-title">DeepSeek 官方文档</p>
+  <p><em>上下文硬盘缓存技术对所有用户默认开启，用户无需修改代码即可享用。</em></p>
+  <p style="margin-top:0.5rem">没有断点要标，没有 scope 要选，没有 TTL 要定。你能做的只有<strong>把前缀写稳</strong>，剩下的服务端替你管。</p>
+</div>
+
+<p>Anthropic 那边是手动的。要缓存哪一段，得自己在请求里打标记：</p>
+
+<p class="src-ref">src/services/api/claude.ts:359</p>
+<pre><code>export function getCacheControl({ scope, querySource } = {}): {
+  type: 'ephemeral'
+  ttl?: '1h'
+  scope?: CacheScope
+} {
+  return {
+    type: 'ephemeral',
+    ...(should1hCacheTTL(querySource) &amp;&amp; { ttl: '1h' }),
+    ...(scope === 'global' &amp;&amp; { scope }),
+  }
+}</code></pre>
+
+<p>三个可调的东西，各自换来一点控制力，也各自多一条打穿的路径。</p>
+
+<h3>一、断点数量有硬上限</h3>
+
+<p class="src-ref">src/services/api/claude.ts:3222 · 源码注释原文</p>
+<pre><code><span class="cm">// IMPORTANT: Do not add any more blocks for caching or you will get a 400</span></code></pre>
+
+<p>意思是：<strong>再加缓存块就会收到 400 错误</strong>。API 允许的 <code>cache_control</code> 块最多 4 个，这个代码库已经用满了。</p>
+
+<p>所以「哪四段值得缓存」是个真正的分配问题，不是想标就标。</p>
+
+<h3>二、scope 决定这份缓存谁能复用</h3>
+
+<p>系统提示词被切成几块，每块带不同的 scope（<code>src/utils/api.ts:321</code> 的 <code>splitSysPromptPrefix</code>）：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:16%">scope</th><th style="width:30%">谁能复用这份缓存</th><th>放什么</th></tr></thead>
+<tbody>
+<tr><td><code>global</code></td><td>所有用户</td><td>写死在代码里的那部分系统提示词，全世界的 Claude Code 完全一样</td></tr>
+<tr><td><code>org</code></td><td>同一个组织</td><td>组织级的配置</td></tr>
+<tr><td><code>null</code></td><td>不缓存</td><td>用户名、当前目录、当前时间这类会话独有的内容</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>切分靠一个哨兵字符串：</p>
+
+<p class="src-ref">src/constants/prompts.ts:106 · 源码注释原文</p>
+<pre><code><span class="cm">// Boundary marker separating static (cross-org cacheable) content from dynamic content.
+// Everything BEFORE this marker in the system prompt array can use scope: 'global'.
+// Everything AFTER contains user/session-specific content and should not be cached.
+//
+// WARNING: Do not remove or reorder this marker without updating cache logic in:
+// - src/utils/api.ts (splitSysPromptPrefix)
+// - src/services/api/claude.ts (buildSystemPromptBlocks)</span>
+
+export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'</code></pre>
+
+<p>意思是：这个标记把系统提示词切成「静态、可跨组织缓存」和「动态、不该缓存」两半，标记<em>之前</em>的可以用 <code>global</code> scope，<em>之后</em>的是用户和会话独有的内容。末尾那句警告点名了两个必须同步改的文件。</p>
+
+<p>值得注意的是这个哨兵<strong>是数组里的一个普通字符串</strong>。谁往系统提示词里插内容时插错了位置，静态区就混进了动态内容，缓存范围默默缩水，没有任何报错。<em>又一次「位置即语义」，和第 0004 课那个十步顺序同一个母题。</em></p>
+
+<h3>三、消息级只留一个标记</h3>
+
+<p class="src-ref">src/services/api/claude.ts:3079 · 源码注释节选</p>
+<pre><code><span class="cm">// Exactly one message-level cache_control marker per request. Mycro's
+// turn-to-turn eviction (page_manager/index.rs: Index::insert) frees
+// local-attention KV pages at any cached prefix position NOT in
+// cache_store_int_token_boundaries. With two markers the second-to-last
+// position is protected and its locals survive an extra turn even though
+// nothing will ever resume from there — with one marker they're freed
+// immediately.</span></code></pre>
+
+<p>意思是：<strong>每次请求在消息区只打一个标记。</strong>打两个的话，倒数第二个位置也会被保护住，它的 KV 页会多活一轮，可是根本不会有人从那个位置续上，纯属占着推理服务的显存。</p>
+
+<p>这段注释里出现了 <code>page_manager/index.rs</code>。<em>一个 TypeScript CLI 的注释在引用推理服务端的 Rust 文件路径和函数名。</em>这说明这个决定不是从 API 文档推出来的，是有人真的去读了服务端的内存回收逻辑。</p>
+
+<div class="box box-real">
+  <p class="box-title">TTL 那个 latch，是本课最该抄走的一招</p>
+  <p>1 小时 TTL 只对部分用户开放，资格取决于订阅状态和额度。问题是<strong>额度状态会在会话中途翻转</strong>，一翻转 TTL 就从 <code>1h</code> 变回默认值，而 TTL 写在 <code>cache_control</code> 里，属于请求内容。</p>
+  <p style="margin-top:0.5rem">内容变了就是打穿。所以源码把资格<strong>锁进进程状态，整个会话只算一次</strong>：</p>
+  <p style="margin-top:0.5rem"><em>把资格锁在 bootstrap 状态里保持会话稳定，防止会话中途的额度翻转改变 <code>cache_control</code> 的 TTL，那会打穿服务端的前缀缓存，每次翻转约 2 万 token</em><br>
+  <span class="src-quote">Latch eligibility in bootstrap state for session stability — prevents mid-session overage flips from changing the cache_control TTL, which would bust the server-side prompt cache (~20K tokens per flip)</span>（<code>src/services/api/claude.ts:404</code>）</p>
+  <p style="margin-top:0.5rem"><strong>一个本来正确的动态值，因为会变，所以被故意冻住了。</strong>这和第 0005 课的 <code>seenIds</code> 是同一个手法：<em>凡是进入请求前缀的东西，稳定比正确重要。</em></p>
+</div>
+
+<h2>两种设计，各自换来什么</h2>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:20%"></th><th style="width:36%">DeepSeek · 自动</th><th>Claude · 手动断点</th></tr></thead>
+<tbody>
+<tr><td><strong>要写的代码</strong></td><td>零</td><td><code>getCacheControl</code>、<code>splitSysPromptPrefix</code>、标记落位、727 行归因</td></tr>
+<tr><td><strong>能控制什么</strong></td><td>只能控制前缀写得稳不稳</td><td>缓存哪几段、给谁复用、存多久</td></tr>
+<tr><td><strong>换来什么</strong></td><td>没有配置就没有配错</td><td>系统提示词能跨用户复用（<code>global</code>）；fork 子 agent 时挪一下标记，写入就变成 no-op</td></tr>
+<tr><td><strong>代价</strong></td><td>缓存范围和时长你说了不算</td><td>多出十几种打穿方式，每一种都得单独盯</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="box box-why">
+  <p class="box-title">这个对照能带走的东西</p>
+  <p>手动断点买到的不是「更好的缓存」，是<strong>能对缓存下判断的资格</strong>。而这份资格的价钱，就是那 727 行。</p>
+  <p style="margin-top:0.5rem">值不值取决于规模。Claude Code 的系统提示词上万 token、用户量足够大，<code>global</code> scope 一开，省下的是全球所有用户的第一次调用。这个量级下 727 行便宜得很。</p>
+  <p style="margin-top:0.5rem">换成你自己的 agent，多半不值。<em>先把前缀写稳，这一条在两种 provider 下都成立，而且免费。</em></p>
+</div>
+
+<h2>检验一下</h2>
+
+<div class="quiz" id="quiz"></div>
+
+<h2>这一课在整张地图的哪里</h2>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:14%">课</th><th style="width:34%">加什么</th><th>它挡住的具体失败</th></tr></thead>
+<tbody>
+<tr><td><strong>0001</strong> ✅</td><td>循环骨架 · 显式状态 · 终止原因</td><td>调用方分不清为什么停了</td></tr>
+<tr><td><strong>0002</strong> ✅</td><td>工具契约 · fail-closed 默认值</td><td>工具作者少写一行导致数据竞争</td></tr>
+<tr><td><strong>0003</strong> ✅</td><td>并发分批 · 带上限的合流</td><td>读到旧内容；50 个调用冲垮句柄</td></tr>
+<tr><td><strong>0004</strong> ✅</td><td>权限十步 · 敏感路径 bypass 免疫</td><td>开了全放行就能改 <code>.git/config</code></td></tr>
+<tr><td><strong>0005</strong> ✅</td><td>两层结果预算 · 冻结语义</td><td>一次测试的 800KB 每轮都重发</td></tr>
+<tr><td><strong>0006</strong> ✅</td><td>前缀缓存 · 打穿归因</td><td>系统提示词里加个时间戳，账单涨十倍且没人知道为什么</td></tr>
+<tr><td>0007</td><td>三级压缩</td><td>历史再稳也会满，满了怎么办</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>第 0005 和 0006 两课合起来，回答的是「上下文里的东西怎么<strong>放</strong>」。下一课换个问题：放不下了怎么办。压缩会主动改写历史，也就是主动打穿缓存，所以它要挑时机。</p>
+
+<h2>读一份一手资料</h2>
+
+<div class="box box-do">
+  <p class="box-title">本课推荐（25 分钟）</p>
+  <p><strong>首选 · <a href="../../../claude-code-source/src/services/api/promptCacheBreakDetection.ts">src/services/api/promptCacheBreakDetection.ts:28</a></strong><br>
+  只读 <code>PreviousState</code> 那个类型，20 个字段，连注释一起大约 45 行。<strong>把它当事故清单读</strong>，每个字段问一句「什么改动会让它变」。读完你会对「哪些东西不能碰」有一份具体的名单，比任何原则都好用。</p>
+  <p style="margin-top:0.6rem"><strong>配套 · <a href="../../../claude-code-source/src/utils/api.ts">src/utils/api.ts:321</a> <code>splitSysPromptPrefix()</code></strong><br>
+  看它怎么把系统提示词切成三到四块、每块配什么 scope。注意<strong>它有三条分支</strong>（全局缓存开、只用工具级缓存、都没有），三条分支切出来的块数和 scope 都不一样。这是「一个配置开关如何渗进请求结构」的活样本。</p>
+  <p style="margin-top:0.6rem"><strong>官方 · <a href="https://api-docs.deepseek.com/zh-cn/guides/kv_cache">DeepSeek 上下文硬盘缓存</a></strong><br>
+  很短，五分钟。重点看它<strong>没说什么</strong>：没说块大小、没说保留时长（只说「几小时到几天」）、没说怎么主动失效。这些没说的地方就是自动方案交出去的控制力。</p>
+</div>
+
+<div class="ask-teacher">
+  <strong>💬 有不清楚的地方，直接问我。</strong>比如：
+  <ul style="margin-bottom:0">
+    <li>那四个断点具体分给了谁，我们可以照着源码排一遍</li>
+    <li>fork 子 agent 时「把标记挪到倒数第二条」为什么能让写入变成 no-op（第 0009 课会正面讲）</li>
+    <li>想给自己的 agent 定一份「不许动的清单」，我们可以一起列</li>
+    <li>难度不合适就说一声</li>
+  </ul>
+</div>
+
+<div class="footer-nav">
+  <p><strong>相关：</strong>
+    <a href="0005-result-budget.html">← 第 0005 课：结果预算</a> ·
+    <a href="../reference/glossary.html">速查 · 架构术语表</a> ·
+    <a href="../index.html">课程总览</a> ·
+    <a href="../../../claude-code-source/docs/architecture-report.html">架构报告全文</a>
+  </p>
+  <p style="color:var(--text-secondary);font-size:0.88rem;margin-top:0.75rem">
+    下一课 · <strong>三级压缩</strong>。前缀写得再稳，上下文窗口也会满。这个代码库准备了三套压缩，分别对应日常清扫、主动搬家、和请求已经被服务端拒绝之后的就地救火。
+  </p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+<script>
+Quiz.render('#quiz', [
+  {
+    q: '一个全新会话的第一次请求，缓存命中大约是多少？',
+    options: [
+      '接近 100%，系统提示词是固定的',
+      '0，缓存要先写进去',
+      '看系统提示词占比，通常一半左右',
+    ],
+    answer: 1,
+    explain: '缓存是<strong>写</strong>出来的。第一次请求把前缀存进服务端，第二次才谈得上复用。<br><br>这条推论很实用：<em>短会话从缓存里得不到什么好处。</em>一个只有两三轮的 agent，优化前缀稳定性的收益远不如一个跑几十轮的。跑 <code>--cache</code> 能直接看到第 1 轮那个 <code>0%</code>。',
+  },
+  {
+    q: '同一句话，插在历史中间和加在历史末尾，为什么代价差将近二十倍？',
+    options: [
+      '中间那次触发了重新分词',
+      '前缀从第一个字节开始比',
+      '末尾的内容本来就不缓存',
+    ],
+    answer: 1,
+    explain: '前缀匹配是<strong>从第一个字节开始、连续相同到第几个字节</strong>。插在中段，那一处往后的所有内容全部作废；加在末尾，前面全部命中。<br><br>请求在 wire 上的顺序是 <code>system → tools → messages</code>，所以这条规律也解释了为什么系统提示词和工具 schema 最不能动，它们排在最前面。',
+  },
+  {
+    q: '把一个工具的描述改错了，下一轮又改回原样。缓存命中会恢复吗？',
+    options: [
+      '不会，上次存进去的是改错的版本',
+      '会，内容和最初完全一致了',
+      '会，但要等 TTL 过期之后',
+    ],
+    answer: 0,
+    explain: '缓存比的是<strong>和上一次请求</strong>一不一样，不是和「正确版本」一不一样。上一轮写进缓存的是改错的那份，这一轮改回去，对缓存来说只是又一次不同。<br><br>更值得记的是：<em>侦测器这一次不会报警。</em>它盯的是「命中比上次掉了」，而这一轮没再往下掉。这类侦测抓得住变坏的那一刻，抓不住一直很坏。<code>--break</code> 的第 4 行就是这个。',
+  },
+  {
+    recall: true,
+    q: '不看上文，用自己的话写下来：手动标缓存断点，换来了什么，代价是什么？',
+    reveal: '<strong>换来的是能对缓存下判断的资格。</strong>具体三样：<br>① 决定缓存哪几段（但最多 4 个 <code>cache_control</code> 块，超了 400）<br>② 决定给谁复用（<code>global</code> 跨用户 / <code>org</code> 跨组织 / <code>null</code> 不缓存），系统提示词的静态部分因此能被全世界的用户共享<br>③ 决定存多久（1h TTL），以及在 fork 子 agent 时挪动标记让缓存写入变成 no-op<br><br><strong>代价是多出十几种打穿方式</strong>，而且每一种都不报错、只涨账单。所以要配一个 727 行的归因模块，它的 <code>PreviousState</code> 有 20 个字段，每个字段背后都是一次真实事故。<br><br><strong>值不值取决于规模。</strong>Claude Code 的系统提示词上万 token 又有海量用户，<code>global</code> scope 省下的是全球所有人的首次调用，727 行很便宜。自己的小 agent 多半不值，<em>而「把前缀写稳」这一条在两种 provider 下都成立，还免费。</em>',
+  },
+])
+</script>
+
+</body>
+</html>
