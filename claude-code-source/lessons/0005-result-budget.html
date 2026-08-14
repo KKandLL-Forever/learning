@@ -161,6 +161,20 @@ sleep               50,000      50,000      50,000   已经顶到上限了
 <pre><code><span class="cm">// This prevents N parallel tools from each hitting the per-tool max and
 // collectively producing e.g. 10 × 40K = 400K in one turn's user message.</span></code></pre>
 
+<h3>先说清楚「替换」是什么动作</h3>
+
+<p>超预算之后要做的事，和第一层完全一样，只是这次由预算发起。下面统一叫<strong>替换</strong>。</p>
+
+<p>被选中的那条 <code>tool_result</code>，它的 <code>content</code> 字段被换掉：</p>
+
+<pre><code><span class="cm">// 替换前，模型看到 29,032 字符的全文</span>
+{ type: 'tool_result', tool_use_id: 'tu_3', content: '&gt; mini-cc test pkg_3\n[00001] …' }
+
+<span class="cm">// 替换后，模型看到 2,178 字符的预览。全文写进了磁盘</span>
+{ type: 'tool_result', tool_use_id: 'tu_3', content: '<span class="hl">&lt;persisted-output&gt;</span>\nOutput too large…' }</code></pre>
+
+<p><code>tool_use_id</code> 没动，所以配对关系还在，API 那条硬约束不受影响。换掉的只有内容。</p>
+
 <h3>动手二：让它触发</h3>
 
 <pre><code>bun run src/v4/main.ts --aggregate</code></pre>
@@ -173,7 +187,9 @@ sleep               50,000      50,000      50,000   已经顶到上限了
   替换了 2 个（从大到小挑，挑到落回预算为止）
   232,256 → <span class="hl">178,548</span>，省下 52.4KB</code></pre>
 
-<p>注意它只替换了 2 个，剩下 6 个的全文模型照样看得见。</p>
+<p>那两个数字可以对上：换掉 2 个，每个 <code>29,032 → 2,178</code>，净省 <code>2 × 26,854 = 53,708</code> 字符，正好是 <code>232,256 − 178,548</code>。</p>
+
+<p>剩下 6 个一个字没动，模型照样能看到它们的全文。</p>
 
 <div class="box box-why">
   <p class="box-title">为什么按体积从大到小挑，而且见好就收</p>
