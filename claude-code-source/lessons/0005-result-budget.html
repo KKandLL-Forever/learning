@@ -117,7 +117,7 @@ Preview (first 2.0KB):
 
 <div class="box box-real">
   <p class="box-title">Infinity 那个分支为什么在 Math.min 之前</p>
-  <p><code>FileReadTool</code> 声明的是 <code>Infinity</code>（<code>FileReadTool.ts:342</code>）。理由在 <code>Tool.ts:462</code> 的注释里：</p>
+  <p><code>FileReadTool</code> 声明的是 <code>Infinity</code>（<code>src/tools/FileReadTool/FileReadTool.ts:342</code>）。理由在 <code>src/Tool.ts:462</code> 的注释里：</p>
   <p style="margin-top:0.5rem"><em>persisting creates a circular Read→file→Read loop</em></p>
   <p style="margin-top:0.5rem">Read 的结果落盘之后，模型要拿全文只能再 Read 一次那个文件，而那次结果又超阈值，又落盘。转不出来。</p>
   <p style="margin-top:0.5rem">所以这个判断必须排在封顶之前。而且源码在这里加了一句额外的话：<em>Checked before the GB override so tengu_satin_quoll can't force it back on</em>。<strong>连运行时特性开关都不许把它扳回来。</strong></p>
@@ -178,13 +178,13 @@ sleep               50,000      50,000      50,000   已经顶到上限了
 <div class="box box-why">
   <p class="box-title">为什么按体积从大到小挑，而且见好就收</p>
   <p>替换是有代价的，模型从此看不到那部分全文了。所以目标是<strong>用最少的替换次数换回足够的额度</strong>。一个 300K 的结果换掉，抵得上三十个 10K 的。</p>
-  <p style="margin-top:0.5rem">循环条件写的是「总量落回预算以内就停」（<code>toolResultStorage.ts:683</code>），不是「全部替换」。多替一个，就多逼模型跑一次 <code>read_file</code>。</p>
+  <p style="margin-top:0.5rem">循环条件写的是「总量落回预算以内就停」（<code>src/utils/toolResultStorage.ts:683</code>），不是「全部替换」。多替一个，就多逼模型跑一次 <code>read_file</code>。</p>
 </div>
 
 <div class="box box-trap">
   <p class="box-title">真实源码在这里比 mini-cc 麻烦得多</p>
   <p>「一条消息」在 mini-cc 里是显而易见的，一轮工具结果就是一条。真实源码里不是。</p>
-  <p style="margin-top:0.5rem"><code>normalizeMessagesForAPI</code> 会把<strong>连续的</strong> user 消息合并成一条发出去，只有 assistant 消息才制造边界。所以预算的分组函数必须用同样的规则再走一遍（<code>toolResultStorage.ts:600</code>）。注释里说得很直白：</p>
+  <p style="margin-top:0.5rem"><code>normalizeMessagesForAPI</code> 会把<strong>连续的</strong> user 消息合并成一条发出去，只有 assistant 消息才制造边界。所以预算的分组函数必须用同样的规则再走一遍（<code>src/utils/toolResultStorage.ts:600</code>）。注释里说得很直白：</p>
   <p style="margin-top:0.5rem"><em>The budget must group the same way or it would see N under-budget messages instead of one over-budget message and fail to enforce exactly when it matters most.</em></p>
   <p style="margin-top:0.5rem">分组分错了不会报错，只会在<strong>最该生效的时候悄悄失效</strong>。这类 bug 的代价是账单，不是崩溃。</p>
 </div>
@@ -381,7 +381,7 @@ Quiz.render('#quiz', [
       '因为历史累积起来早晚会超',
     ],
     answer: 1,
-    explain: '10 个并行工具各吐 40K，每一个都没超自己的阈值，第一层全部放行。但它们在 wire 上是<strong>同一条 user 消息</strong>，加起来 400K。源码注释原话是 <em>This prevents N parallel tools from each hitting the per-tool max and collectively producing e.g. 10 × 40K = 400K in one turn\'s user message</em>（<code>toolLimits.ts:35</code>）。<br><br>第三个选项说的是另一件事。历史累积由压缩管，每消息预算只看单条消息，两条各 150K 的消息都在预算内，谁也不动。',
+    explain: '10 个并行工具各吐 40K，每一个都没超自己的阈值，第一层全部放行。但它们在 wire 上是<strong>同一条 user 消息</strong>，加起来 400K。源码注释原话是 <em>This prevents N parallel tools from each hitting the per-tool max and collectively producing e.g. 10 × 40K = 400K in one turn\'s user message</em>（<code>src/constants/toolLimits.ts:35</code>）。<br><br>第三个选项说的是另一件事。历史累积由压缩管，每消息预算只看单条消息，两条各 150K 的消息都在预算内，谁也不动。',
   },
   {
     q: '某个结果第一次检查时没超预算，所以没被替换。几轮之后预算被调小了，它现在超了。系统会替换它吗？',
