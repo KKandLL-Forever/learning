@@ -38,6 +38,32 @@ skill 位置：`C:\Users\Administrator\.claude\skills\humanizer-zh\`
 - 英文品牌名用官方大小写：`GitHub`、`OpenAI`、`YouTube`、`DeepSeek`
 - 数字日期写作 `2026 年 8 月 9 日`
 
+### 引用源码里的英文注释：双语展示
+
+**课程正文引用源码注释时，如果原文是英文，必须同时给出中文。** 只给英文等于把理解成本转嫁给读者，只给中文又没法回源码核对。
+
+两种引用形态分别这么处理：
+
+**一、正文里的行内引用**（`<em>` 包着的那种）：中文在前，英文原文跟在后面加括号。
+
+```html
+<em>放在最后，这样任何提前返回都绕不过它</em>
+<span class="src-quote">This is done at the end so it can't be bypassed by early returns</span>
+```
+
+**二、`<pre><code>` 里整段的注释引用**：代码块本身不动（保持源码原样，这是既有规矩），在块的**下面**补一句中文说明。不要在代码块内部插中文翻译行。
+
+```html
+<p class="src-ref">src/utils/permissions/permissions.ts:503 · 源码注释原文</p>
+<pre><code><span class="cm">// Apply dontAsk mode transformation: convert 'ask' to 'deny'
+// This is done at the end so it can't be bypassed by early returns</span></code></pre>
+<p>意思是：<code>dontAsk</code> 把 ask 转成 deny 的变换放在最后做，这样十步里任何一个提前 <code>return</code> 都绕不过它。</p>
+```
+
+补的那句中文不是逐字翻译，是**把它放回本课语境里说一遍**。逐字翻译常常比英文还难懂，因为源码注释默认读者知道上下文。
+
+术语不翻：`tool_use`、`prompt cache`、`fail-closed`、变量名、特性开关名（`tengu_satin_quoll`）保持原样。
+
 ### 作者声音：默认不用
 
 humanizer-zh 带 8 位中文作者的风格档案，可以套腔调重写。**课程正文默认走中立润色，不套任何作者的声音。** 教学材料需要跨课一致，个人腔调会让相邻两课读起来像两个人写的。
