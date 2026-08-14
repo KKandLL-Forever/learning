@@ -157,7 +157,7 @@
 <span class="where">src/utils/toolResultStorage.ts:137</span></dd>
 
 <dt>maxResultSizeChars<span class="en">单个结果的阈值</span><span class="ch">06</span></dt>
-<dd>工具契约里的一个成员，声明「结果超过多少字符就落盘」。它<strong>不是最终阈值</strong>：<code>Math.min(声明值, 50000)</code> 会把它夹住，所以工具只能往严了调。<code>Infinity</code> 是唯一例外，表示永不落盘，判断位置在夹取<strong>之前</strong>。<code>Read</code> 用它避开 Read→落盘→再 Read 的循环。
+<dd>工具契约里的一个成员，声明「结果超过多少字符就落盘」。它<strong>不是最终阈值</strong>：<code>Math.min(声明值, 50000)</code> 给它封顶，所以工具只能往严了调。<code>Infinity</code> 是唯一例外，表示永不落盘，判断位置排在封顶<strong>之前</strong>。<code>Read</code> 用它避开 Read→落盘→再 Read 的循环。
 <span class="where">src/Tool.ts:466 · toolResultStorage.ts:55</span></dd>
 
 <dt>每消息预算<span class="en">per-message aggregate budget</span><span class="ch">06</span></dt>

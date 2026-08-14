@@ -29,7 +29,7 @@ import type { BudgetReport, Message, ToolResultBlock } from './types.js'
 
 /**
  * 单个结果的全局上限。工具可以声明比它更小的 maxResultSizeChars，
- * 但声明得再大也会被这个值夹住。
+ * 但声明得再大也会被这个值封顶。
  * 真实源码：constants/toolLimits.ts:13 DEFAULT_MAX_RESULT_SIZE_CHARS
  */
 export const DEFAULT_MAX_RESULT_SIZE_CHARS = 50_000
@@ -73,7 +73,7 @@ export function getPerMessageBudgetLimit(): number {
 /**
  * 算出某个工具的实际落盘阈值。
  *
- * 【Infinity 是硬退出】，而且要在夹取之前判断。
+ * 【Infinity 是硬退出】，而且要排在封顶之前判断。
  * read_file 设 Infinity，因为把它的结果落盘会形成
  * read_file → 落盘 → 模型再 read_file 那个文件 的循环。
  *

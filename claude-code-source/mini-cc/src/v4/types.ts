@@ -227,13 +227,13 @@ export type Tool = {
   /**
    * 结果超过多少字符就落盘，模型只拿预览 + 路径。
    *
-   * 这个值不是最终阈值——全局上限会把它夹住（见 getPersistenceThreshold）。
+   * 这个值不是最终阈值——全局上限会给它封顶（见 getPersistenceThreshold）。
    * 声明 100_000 的工具实际按 50_000 执行，声明 20_000 的按 20_000。
    * 所以工具能做的只有【往严了调】。
    *
    * 设 Infinity = 永不落盘。read_file 就这么干，否则会形成
    * read_file → 落盘 → 模型再 read_file 那个文件 的循环。
-   * 注意 Infinity 走的是另一条分支，不参与夹取。
+   * 注意 Infinity 走的是另一条分支，不参与封顶。
    */
   maxResultSizeChars: number
 

@@ -82,7 +82,7 @@ function num(n: number): string {
 
 function printThresholds() {
   console.log(`${BOLD}每个工具的实际落盘阈值${RESET}`)
-  console.log(`${DIM}工具声明的值不是最终值，全局上限 ${num(DEFAULT_MAX_RESULT_SIZE_CHARS)} 会把它夹住。${RESET}\n`)
+  console.log(`${DIM}工具声明的值不是最终值，全局上限 ${num(DEFAULT_MAX_RESULT_SIZE_CHARS)} 给它封顶。${RESET}\n`)
 
   console.log(
     `${DIM}${padTo('工具', 14)}${padLeft('声明值', 12)}${padLeft('全局上限', 12)}${padLeft('实际阈值', 12)}   说明${RESET}`,
@@ -92,10 +92,10 @@ function printThresholds() {
     const effective = getPersistenceThreshold(declared)
     const infinite = !Number.isFinite(declared)
     const note = infinite
-      ? '硬退出，不参与夹取'
+      ? '硬退出，不参与封顶'
       : declared < DEFAULT_MAX_RESULT_SIZE_CHARS
         ? '自己调得更严，生效'
-        : '被全局上限夹住'
+        : '已经顶到上限了'
     const color = infinite ? CYAN : declared < DEFAULT_MAX_RESULT_SIZE_CHARS ? GREEN : YELLOW
     console.log(
       padTo(tool.name, 14) +
@@ -108,7 +108,7 @@ function printThresholds() {
 
   console.log()
   console.log(`${YELLOW}工具只能往严了调。${RESET}${DIM}声明 100000 也没用，Math.min 会把它拉回 ${num(DEFAULT_MAX_RESULT_SIZE_CHARS)}。${RESET}`)
-  console.log(`${DIM}唯一的例外是 Infinity，它走另一条分支，在夹取【之前】就返回了。${RESET}`)
+  console.log(`${DIM}唯一的例外是 Infinity，它走另一条分支，在封顶【之前】就返回了。${RESET}`)
 }
 
 // ── 演示二：第一层，单个结果太大 ────────────────────────

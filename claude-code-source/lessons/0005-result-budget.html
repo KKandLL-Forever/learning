@@ -86,7 +86,7 @@ Preview (first 2.0KB):
 <table>
 <thead><tr><th style="width:22%">层</th><th style="width:26%">管什么</th><th style="width:16%">阈值</th><th>触发时机</th></tr></thead>
 <tbody>
-<tr><td><strong>第一层</strong></td><td>单个结果太大</td><td>工具声明，全局夹住</td><td>工具刚跑完，结果进消息之前</td></tr>
+<tr><td><strong>第一层</strong></td><td>单个结果太大</td><td>工具自己声明，50,000 封顶</td><td>工具刚跑完，结果进消息之前</td></tr>
 <tr><td><strong>第二层</strong></td><td>一条消息里加起来太大</td><td>200,000 字符</td><td>每轮请求发出之前</td></tr>
 </tbody>
 </table>
@@ -120,7 +120,7 @@ Preview (first 2.0KB):
   <p><code>FileReadTool</code> 声明的是 <code>Infinity</code>（<code>FileReadTool.ts:342</code>）。理由在 <code>Tool.ts:462</code> 的注释里：</p>
   <p style="margin-top:0.5rem"><em>persisting creates a circular Read→file→Read loop</em></p>
   <p style="margin-top:0.5rem">Read 的结果落盘之后，模型要拿全文只能再 Read 一次那个文件，而那次结果又超阈值，又落盘。转不出来。</p>
-  <p style="margin-top:0.5rem">所以这个判断必须在夹取之前。而且源码在这里加了一句额外的话：<em>Checked before the GB override so tengu_satin_quoll can't force it back on</em>。<strong>连运行时特性开关都不许把它扳回来。</strong></p>
+  <p style="margin-top:0.5rem">所以这个判断必须排在封顶之前。而且源码在这里加了一句额外的话：<em>Checked before the GB override so tengu_satin_quoll can't force it back on</em>。<strong>连运行时特性开关都不许把它扳回来。</strong></p>
 </div>
 
 <h3>动手一：看阈值是怎么算出来的</h3>
@@ -129,10 +129,10 @@ Preview (first 2.0KB):
 bun run src/v4/main.ts --thresholds</code></pre>
 
 <pre><code>工具                声明值    全局上限    实际阈值   说明
-read_file                ∞      50,000           ∞   硬退出，不参与夹取
-list_dir            50,000      50,000      50,000   被全局上限夹住
-write_file          50,000      50,000      50,000   被全局上限夹住
-sleep               50,000      50,000      50,000   被全局上限夹住
+read_file                ∞      50,000           ∞   硬退出，不参与封顶
+list_dir            50,000      50,000      50,000   已经顶到上限了
+write_file          50,000      50,000      50,000   已经顶到上限了
+sleep               50,000      50,000      50,000   已经顶到上限了
 <span class="hl">run_tests           30,000      50,000      30,000   自己调得更严，生效</span></code></pre>
 
 <p><code>v4</code> 新加了一个 <code>run_tests</code> 工具，专门产生大块日志，行数可调。它的 <code>30_000</code> 抄的是真实源码里 <code>BashTool</code> 的值。</p>
@@ -367,7 +367,7 @@ Quiz.render('#quiz', [
     q: '一个工具声明 <code>maxResultSizeChars: 100_000</code>，它的结果实际超过多少字符会落盘？',
     options: [
       '100,000，工具自己说了算',
-      '50,000，被全局上限夹住',
+      '50,000，全局上限给它封顶',
       '不落盘，声明得越大越不受管',
     ],
     answer: 1,
