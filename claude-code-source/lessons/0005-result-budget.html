@@ -175,6 +175,39 @@ sleep               50,000      50,000      50,000   已经顶到上限了
 
 <p><code>tool_use_id</code> 没动，所以配对关系还在，API 那条硬约束不受影响。换掉的只有内容。</p>
 
+<h3>超了之后，怎么决定换谁</h3>
+
+<p>算法只有三行：</p>
+
+<ol class="steps">
+  <li>把这条消息里的结果<strong>按体积从大到小</strong>排序</li>
+  <li>依次替换，每换一个就重算总量</li>
+  <li>总量落回预算以内，<strong>立刻停手</strong></li>
+</ol>
+
+<p>用一组不那么整齐的数字走一遍。假设一条消息里有 5 个结果，合计 240K，预算 200K：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:10%">结果</th><th style="width:14%">体积</th><th style="width:16%">动作</th><th>换完之后的总量</th></tr></thead>
+<tbody>
+<tr><td><strong>A</strong></td><td>120K</td><td><strong>替换</strong></td><td>240K − 120K = <strong>120K</strong>，已经 ≤ 200K</td></tr>
+<tr><td>B</td><td>60K</td><td>不动</td><td>上一步就停了，根本没轮到它</td></tr>
+<tr><td>C</td><td>30K</td><td>不动</td><td></td></tr>
+<tr><td>D</td><td>20K</td><td>不动</td><td></td></tr>
+<tr><td>E</td><td>10K</td><td>不动</td><td></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>只换了 A 一个，B 到 E 的全文模型全都看得见。</p>
+
+<div class="box box-why">
+  <p class="box-title">这两个选择各自在换什么</p>
+  <p><strong>从大到小挑</strong>，是为了让替换次数最少。换一个 120K 的一步到位；从小的开始得换 E、D、C、B 四个才够，模型损失四份全文，还多写四个文件。一个 300K 的结果换掉，抵得上三十个 10K 的。</p>
+  <p style="margin-top:0.5rem"><strong>见好就收</strong>，是因为替换有代价。模型从此看不到那部分全文，可能得多跑一次 <code>read_file</code>。所以循环条件写的是「总量落回预算以内就停」（<code>src/utils/toolResultStorage.ts:683</code>），不是「全部替换」。<em>目标是落回预算，不是把消息榨干。</em></p>
+</div>
+
 <h3>动手二：让它触发</h3>
 
 <pre><code>bun run src/v4/main.ts --aggregate</code></pre>
@@ -187,15 +220,9 @@ sleep               50,000      50,000      50,000   已经顶到上限了
   替换了 2 个（从大到小挑，挑到落回预算为止）
   232,256 → <span class="hl">178,548</span>，省下 52.4KB</code></pre>
 
-<p>那两个数字可以对上：换掉 2 个，每个 <code>29,032 → 2,178</code>，净省 <code>2 × 26,854 = 53,708</code> 字符，正好是 <code>232,256 − 178,548</code>。</p>
+<p>这次 8 个结果一样大，所以排序没起作用，但「挑到够为止」起了：超了 32,256，换掉一个净省 26,854 还不够，换第二个就落回来了，于是停在 2 个。<strong>那个 2 是算出来的，不是定死的。</strong></p>
 
-<p>剩下 6 个一个字没动，模型照样能看到它们的全文。</p>
-
-<div class="box box-why">
-  <p class="box-title">为什么按体积从大到小挑，而且见好就收</p>
-  <p>替换是有代价的，模型从此看不到那部分全文了。所以目标是<strong>用最少的替换次数换回足够的额度</strong>。一个 300K 的结果换掉，抵得上三十个 10K 的。</p>
-  <p style="margin-top:0.5rem">循环条件写的是「总量落回预算以内就停」（<code>src/utils/toolResultStorage.ts:683</code>），不是「全部替换」。多替一个，就多逼模型跑一次 <code>read_file</code>。</p>
-</div>
+<p>数字可以对上：每个 <code>29,032 → 2,178</code>，净省 <code>2 × 26,854 = 53,708</code>，正好是 <code>232,256 − 178,548</code>。剩下 6 个一个字没动。</p>
 
 <div class="box box-trap">
   <p class="box-title">真实源码在这里比 mini-cc 麻烦得多</p>
@@ -209,11 +236,41 @@ sleep               50,000      50,000      50,000   已经顶到上限了
 
 <p>到这里为止的逻辑都很直白。接下来这一段是整个模块里最反直觉的部分，也是最值钱的部分。</p>
 
-<p>预算跑在每一轮请求之前，而每一轮发的都是完整历史。所以第 5 轮跑预算时，第 3 轮的那些结果会被再看一遍。</p>
+<h3>先补一个关于缓存的最小事实</h3>
 
-<p><strong>问题来了：如果这次判断的结果和上次不一样呢？</strong></p>
+<p>服务端会缓存请求的<strong>开头</strong>。下次请求如果开头这一大段和上次<em>一字节都不差</em>，这部分直接复用，只收 10% 的钱。</p>
 
-<p>上一轮发的是全文，这一轮发的是预览，那么请求的字节流从那一处开始就变了。变了的地方往后，缓存前缀全部作废，整段重新计费。省下来的那点额度，还不够赔的。</p>
+<p>关键在于它比的是<strong>从第一个字节开始的连续相同</strong>。中间任何一处变了，从那里往后全部作废，得重新算一遍全价。</p>
+
+<p>所以「历史消息」有一个平时想不到的性质：<strong>它一旦发出去，就最好再也别动了。</strong>动一个字符，后面几十轮攒下的缓存全废。</p>
+
+<h3>问题就出在这里</h3>
+
+<p>预算每一轮都要跑，而每一轮发的都是完整历史。<strong>同一条老消息会被反复判断。</strong></p>
+
+<p>接着上面那个例子往下走。第 3 轮那条消息有 A(120K) B(60K) C(30K) D(20K) E(10K)，预算 200K，当时换掉了 A：</p>
+
+<div class="table-wrap">
+<table>
+<thead><tr><th style="width:12%">轮次</th><th style="width:30%">发生了什么</th><th>预算对第 3 轮那条消息做了什么</th></tr></thead>
+<tbody>
+<tr><td><strong>第 3 轮</strong></td><td>消息第一次出现，240K 超预算</td><td>判断一次，换掉 A，<strong>把 A 的替换文本记下来</strong></td></tr>
+<tr><td><strong>第 4 轮</strong></td><td>同一条消息又被发一遍</td><td><strong>不重新判断</strong>，查表把 A 的那串字原样贴回去</td></tr>
+<tr><td><strong>第 5 轮</strong></td><td>有人把预算调到 60K</td><td>按新预算 B 也该换了。但 B 见过，<strong>不动</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>第 5 轮那一格是整件事的要害。<strong>明明「该换」，却不能换。</strong></p>
+
+<p>因为 B 的全文在第 3 轮和第 4 轮已经发出去两次了。这一轮突然换成预览，请求前缀就从 B 那个位置断开，B 后面所有内容的缓存一起作废。省下 60K，赔掉几十万 token 的缓存命中。</p>
+
+<div class="box box-why">
+  <p class="box-title">换个说法</p>
+  <p>把已经发出去的历史想成<strong>寄出去的信</strong>。收件人手里有一份副本，你手里有一份底稿。只要两份对得上，续写下一页就行。</p>
+  <p style="margin-top:0.5rem">现在你觉得第 3 页写得太啰嗦，想删掉一半。可以删，但代价是收件人手里那份对不上了，整封信得重寄。</p>
+  <p style="margin-top:0.5rem"><em>省纸和重寄，哪个划算，取决于信有多长。</em>在一个跑了几十轮的会话里，答案永远是别动。</p>
+</div>
 
 <p>所以这个模块用两个字段把决定钉死：</p>
 
@@ -235,6 +292,10 @@ sleep               50,000      50,000      50,000   已经顶到上限了
 </tbody>
 </table>
 </div>
+
+<p>对照上面那个例子，第 5 轮的时候：<strong>A</strong> 是 <code>mustReapply</code>（查表贴回），<strong>B 到 E</strong> 是 <code>frozen</code>（碰都不碰），第 5 轮新产生的那些结果才是 <code>fresh</code>。</p>
+
+<p>所以预算模块随着会话变长，做的事越来越少。老消息全是查表，真正需要判断的永远只有最新那一条。</p>
 
 <p>还有一个细节值得注意：<code>replacements</code> 存的是<strong>字符串本身</strong>，不是「稍后重新生成」。源码解释了为什么：</p>
 
