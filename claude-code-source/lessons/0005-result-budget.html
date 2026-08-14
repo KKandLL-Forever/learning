@@ -111,6 +111,8 @@ Preview (first 2.0KB):
   return <span class="hl">Math.min(declaredMaxResultSizeChars, DEFAULT_MAX_RESULT_SIZE_CHARS)</span>
 }</code></pre>
 
+<p>第一行那句 <span class="src-quote">Infinity = hard opt-out</span> 的意思是「<strong>Infinity 等于硬退出</strong>」，声明成它就彻底不参与这套机制，下面细说。</p>
+
 <p><code>DEFAULT_MAX_RESULT_SIZE_CHARS</code> 是 50,000。那个 <code>Math.min</code> 决定了工具作者的活动范围只有一个方向：声明 20,000 会生效，声明 100,000 会被拉回 50,000。</p>
 
 <p>源码里大部分工具写的是 <code>100_000</code>，等于什么都没说。真正调过的只有几个，<code>BashTool</code> 是 <code>30_000</code>，<code>GrepTool</code> 是 <code>20_000</code>，都是往严了调。</p>
@@ -118,9 +120,12 @@ Preview (first 2.0KB):
 <div class="box box-real">
   <p class="box-title">Infinity 那个分支为什么在 Math.min 之前</p>
   <p><code>FileReadTool</code> 声明的是 <code>Infinity</code>（<code>src/tools/FileReadTool/FileReadTool.ts:342</code>）。理由在 <code>src/Tool.ts:462</code> 的注释里：</p>
-  <p style="margin-top:0.5rem"><em>persisting creates a circular Read→file→Read loop</em></p>
+  <p style="margin-top:0.5rem"><em>落盘会造成 Read→文件→Read 的循环</em><br>
+  <span class="src-quote">persisting creates a circular Read→file→Read loop</span></p>
   <p style="margin-top:0.5rem">Read 的结果落盘之后，模型要拿全文只能再 Read 一次那个文件，而那次结果又超阈值，又落盘。转不出来。</p>
-  <p style="margin-top:0.5rem">所以这个判断必须排在封顶之前。而且源码在这里加了一句额外的话：<em>Checked before the GB override so tengu_satin_quoll can't force it back on</em>。<strong>连运行时特性开关都不许把它扳回来。</strong></p>
+  <p style="margin-top:0.5rem">所以这个判断必须排在封顶之前。而且源码在这里加了一句额外的话，<em>这一步要在读特性开关之前检查，免得 <code>tengu_satin_quoll</code> 把它扳回来</em>：</p>
+  <p style="margin-top:0.3rem"><span class="src-quote">Checked before the GB override so tengu_satin_quoll can't force it back on</span></p>
+  <p style="margin-top:0.5rem"><strong>连运行时特性开关都不许覆盖它。</strong></p>
 </div>
 
 <h3>动手一：看阈值是怎么算出来的</h3>
@@ -160,6 +165,8 @@ sleep               50,000      50,000      50,000   已经顶到上限了
 <p class="src-ref">src/constants/toolLimits.ts:35 · 源码注释原文</p>
 <pre><code><span class="cm">// This prevents N parallel tools from each hitting the per-tool max and
 // collectively producing e.g. 10 × 40K = 400K in one turn's user message.</span></code></pre>
+
+<p>意思是：这一层拦的是「<strong>N 个并行工具各自都卡在自己的上限之内，合起来却在一轮的 user 消息里堆出 10 × 40K = 400K</strong>」。注意它举的例子每一个都合规，问题出在加总。</p>
 
 <h3>先说清楚「替换」是什么动作</h3>
 
@@ -228,7 +235,8 @@ sleep               50,000      50,000      50,000   已经顶到上限了
   <p class="box-title">真实源码在这里比 mini-cc 麻烦得多</p>
   <p>「一条消息」在 mini-cc 里是显而易见的，一轮工具结果就是一条。真实源码里不是。</p>
   <p style="margin-top:0.5rem"><code>normalizeMessagesForAPI</code> 会把<strong>连续的</strong> user 消息合并成一条发出去，只有 assistant 消息才制造边界。所以预算的分组函数必须用同样的规则再走一遍（<code>src/utils/toolResultStorage.ts:600</code>）。注释里说得很直白：</p>
-  <p style="margin-top:0.5rem"><em>The budget must group the same way or it would see N under-budget messages instead of one over-budget message and fail to enforce exactly when it matters most.</em></p>
+  <p style="margin-top:0.5rem"><em>预算必须用同样的方式分组，否则它看到的会是 N 条没超预算的消息，而不是一条超了预算的消息，于是恰恰在最该生效的时候失效。</em><br>
+  <span class="src-quote">The budget must group the same way or it would see N under-budget messages instead of one over-budget message and fail to enforce exactly when it matters most.</span></p>
   <p style="margin-top:0.5rem">分组分错了不会报错，只会在<strong>最该生效的时候悄悄失效</strong>。这类 bug 的代价是账单，不是崩溃。</p>
 </div>
 
@@ -304,7 +312,9 @@ sleep               50,000      50,000      50,000   已经顶到上限了
 // derived on resume so code changes to the preview template, size formatting,
 // or path layout can't silently break prompt cache.</span></code></pre>
 
-<p>改一下预览模板、改一下体积的显示格式，重新生成出来的字符串就和当初发出去的差一点点。差一个字符，前缀就断了。存下来是唯一可靠的做法。</p>
+<p>意思是：<code>replacement</code> 存的是<strong>模型当初真正看到的那串字</strong>。之所以存下来而不是 resume 时重新推导，是为了让预览模板、体积格式、路径写法这些地方的<em>代码改动</em>没机会悄悄打穿 prompt cache。</p>
+
+<p>换句话说，改一下预览模板或者体积的显示格式，重新生成出来的字符串就和当初发出去的差一点点。差一个字符，前缀就断了。存下来是唯一可靠的做法。</p>
 
 <h3>动手三：把前缀稳定性量出来</h3>
 
@@ -379,7 +389,7 @@ unit 的日志太长被落盘了，预览不够，我把全文取回来。
 <div class="box box-trap">
   <p class="box-title">留给你的一个漏洞</p>
   <p>看第 2 轮那次 <code>read_file</code>。它读回来的是完整的 44.4KB，而 <code>read_file</code> 声明了 <code>Infinity</code>，第一层放它过去，第二层也豁免它。<strong>这 44.4KB 就这么原样进了历史，一轮没少。</strong></p>
-  <p style="margin-top:0.5rem">所以豁免不是免费的。真实源码里 Read 是有边界的，它自己带行数上限和 <code>maxTokens</code>，源码注释写的是 <em>the tool already self-bounds via its own limits</em>。<code>mini-cc</code> 的 <code>read_file</code> 什么边界都没有。</p>
+  <p style="margin-top:0.5rem">所以豁免不是免费的。真实源码里 Read 是有边界的，它自己带行数上限和 <code>maxTokens</code>，源码注释写的是<em>这个工具已经用自己的限制约束住了自己</em>（<span class="src-quote">the tool already self-bounds via its own limits</span>）。<code>mini-cc</code> 的 <code>read_file</code> 什么边界都没有。</p>
   <p style="margin-top:0.5rem">给 <code>read_file</code> 加上 <code>offset</code> 和 <code>limit</code> 参数，让模型能只取自己要的那几行。这是本课的练习，也是<em>豁免必须配自限</em>这条规矩的现场演示。</p>
 </div>
 
@@ -458,7 +468,7 @@ Quiz.render('#quiz', [
       '因为历史累积起来早晚会超',
     ],
     answer: 1,
-    explain: '10 个并行工具各吐 40K，每一个都没超自己的阈值，第一层全部放行。但它们在 wire 上是<strong>同一条 user 消息</strong>，加起来 400K。源码注释原话是 <em>This prevents N parallel tools from each hitting the per-tool max and collectively producing e.g. 10 × 40K = 400K in one turn\'s user message</em>（<code>src/constants/toolLimits.ts:35</code>）。<br><br>第三个选项说的是另一件事。历史累积由压缩管，每消息预算只看单条消息，两条各 150K 的消息都在预算内，谁也不动。',
+    explain: '10 个并行工具各吐 40K，每一个都没超自己的阈值，第一层全部放行。但它们在 wire 上是<strong>同一条 user 消息</strong>，加起来 400K。源码注释原话是「这一层拦的是 N 个并行工具各自都卡在自己的上限之内、合起来却在一轮的 user 消息里堆出 10 × 40K = 400K」（<span class="src-quote">This prevents N parallel tools from each hitting the per-tool max and collectively producing e.g. 10 × 40K = 400K in one turn\'s user message</span> · <code>src/constants/toolLimits.ts:35</code>）。<br><br>第三个选项说的是另一件事。历史累积由压缩管，每消息预算只看单条消息，两条各 150K 的消息都在预算内，谁也不动。',
   },
   {
     q: '某个结果第一次检查时没超预算，所以没被替换。几轮之后预算被调小了，它现在超了。系统会替换它吗？',
@@ -468,7 +478,7 @@ Quiz.render('#quiz', [
       '会，但要等下一次压缩',
     ],
     answer: 0,
-    explain: '进了 <code>seenIds</code> 就冻结。理由不在这个结果本身，在<strong>它之前那些字节</strong>：上一轮发出去的是全文，这一轮改成预览，请求前缀就从这里断了，往后的缓存全部作废。省下的额度不够赔重新计费的。<br><br>源码里这句写得很清楚：<em>a mid-session flag change only affects FRESH messages</em>。你可以跑 <code>--stability</code> 直接看到这个对照，带状态那组 hash 四轮不动，不带状态那组在改预算的那一轮就变了。',
+    explain: '进了 <code>seenIds</code> 就冻结。理由不在这个结果本身，在<strong>它之前那些字节</strong>：上一轮发出去的是全文，这一轮改成预览，请求前缀就从这里断了，往后的缓存全部作废。省下的额度不够赔重新计费的。<br><br>源码里这句写得很清楚：「会话中途改开关，只影响那些<strong>没见过的</strong>消息」（<span class="src-quote">a mid-session flag change only affects FRESH messages</span>）。你可以跑 <code>--stability</code> 直接看到这个对照，带状态那组 hash 四轮不动，不带状态那组在改预算的那一轮就变了。',
   },
   {
     recall: true,

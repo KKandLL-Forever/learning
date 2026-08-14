@@ -113,6 +113,15 @@ pre .hl { background: var(--highlight); display: inline-block; width: 100%; }
   margin: 0.6rem 0 -0.4rem;
 }
 
+/* 源码英文注释的原文，跟在中文译文后面 */
+.src-quote {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-style: normal;
+}
+.src-quote::before { content: "／ "; }
+
 /* ── 各类提示框 ─────────────────────────────── */
 .box { border-radius: 4px; padding: 0.9rem 1.1rem; margin: 1.25rem 0; }
 .box > :first-child { margin-top: 0; }
