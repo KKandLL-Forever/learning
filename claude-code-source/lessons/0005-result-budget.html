@@ -232,7 +232,7 @@ sleep               50,000      50,000      50,000   已经顶到上限了
   <p style="margin-top:0.5rem">分组分错了不会报错，只会在<strong>最该生效的时候悄悄失效</strong>。这类 bug 的代价是账单，不是崩溃。</p>
 </div>
 
-<h2>冻结：见过一次，命运就定了</h2>
+<h2>冻结：判过一次，就不再改判</h2>
 
 <p>到这里为止的逻辑都很直白。接下来这一段是整个模块里最反直觉的部分，也是最值钱的部分。</p>
 
@@ -280,7 +280,7 @@ sleep               50,000      50,000      50,000   已经顶到上限了
   <span class="hl">replacements: Map&lt;string, string&gt;</span> <span class="cm">// 其中被替换的，连当时给模型看的那串字一起存</span>
 }</code></pre>
 
-<p>规则只有一句：<strong>进了 <code>seenIds</code>，这个结果的命运就不再改变。</strong></p>
+<p>规则只有一句：<strong>进了 <code>seenIds</code>，这个结果就不再改判。</strong></p>
 
 <div class="table-wrap">
 <table>

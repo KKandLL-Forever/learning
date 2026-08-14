@@ -165,7 +165,7 @@
 <span class="where">src/constants/toolLimits.ts:49</span></dd>
 
 <dt>ContentReplacementState<span class="en">冻结语义</span><span class="ch">05 · 06</span></dt>
-<dd>两个字段：<code>seenIds</code>（过过一遍预算检查的）和 <code>replacements</code>（其中被替换的，连当时给模型看的那串字一起存）。规矩是<strong>进了 seenIds 命运就定型</strong>，替过的每轮查表贴回，没替的从此不许替。理由不在结果本身，在它之前那些字节：决定一变，请求前缀就断，缓存全部作废。存字符串而非重新生成，是防止改模板时悄悄破坏前缀。
+<dd>两个字段：<code>seenIds</code>（过过一遍预算检查的）和 <code>replacements</code>（其中被替换的，连当时给模型看的那串字一起存）。规矩是<strong>进了 seenIds 就不再改判</strong>，替过的每轮查表贴回，没替的从此不许替。理由不在结果本身，在它之前那些字节：决定一变，请求前缀就断，缓存全部作废。存字符串而非重新生成，是防止改模板时悄悄破坏前缀。
 <span class="where">src/utils/toolResultStorage.ts:390</span></dd>
 
 <dt>microCompact<span class="en">日常清扫</span><span class="ch">06</span></dt>
