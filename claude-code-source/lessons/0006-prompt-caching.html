@@ -86,7 +86,19 @@ bun run src/v5/main.ts --cache</code></pre>
 
 <p>「前缀缓存」这四个字要拆开看。它比的<strong>不是</strong>「内容相似度」，而是<strong>从第一个字节开始，连续相同到第几个字节</strong>。中间任何一处不一样，从那里往后全部作废。</p>
 
-<p>而请求在 wire 上的顺序是固定的：</p>
+<p>而请求在 <strong>wire</strong> 上的顺序是固定的：</p>
+
+<div class="box box-real">
+  <p class="box-title">wire 是什么</p>
+  <p>网络协议的老词，字面是「电线」，<code>on the wire</code> 指数据<strong>在网线上实际传输时的那个形态</strong>，也就是序列化之后的字节。</p>
+  <pre style="margin-top:0.5rem"><code><span class="cm">// 内存里的样子：三个独立变量，本来没有先后</span>
+system, tools, messages
+
+<span class="cm">// wire 上的样子：拼成一串，顺序就此定死</span>
+`${system}${toolPart}${messagePart}`</code></pre>
+  <p style="margin-top:0.5rem"><strong>服务端收不到你的对象，它只收到字节。</strong>所以缓存比的是后者。<code>mini-cc</code> 里那个 <code>serializeRequest()</code> 干的就是这件事。</p>
+  <p style="margin-top:0.5rem">别和第 0001 课的<em>事件流</em>混。那是 <code>AsyncGenerator</code> 逐条 yield，关心的是时序；wire 关心的是<em>表示形态</em>。两者正交，一份数据可以「以 wire 格式流式传输」。</p>
+</div>
 
 <pre><code>┌──────────┬───────────────┬────────────────────────────┐
 │  system  │     tools     │          messages          │

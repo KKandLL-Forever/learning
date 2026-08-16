@@ -192,6 +192,11 @@
 <dt>Prompt Caching<span class="en">前缀缓存</span><span class="ch">05</span></dt>
 <dd>在请求某个位置打 <code>cache_control</code> 标记，意思是「这个位置<strong>之前</strong>的所有内容请存起来」。下次请求若开头这一大段<strong>一字节都没变</strong>，服务端直接复用，命中部分只要 10% 的价格。</dd>
 
+<dt>wire<span class="en">on the wire · 传输格式</span><span class="ch">05 · 06</span></dt>
+<dd>网络协议的老词，字面是「电线」，指数据<strong>在网线上实际传输时的那个形态</strong>，也就是序列化之后的字节。和「内存里的对象」相对。
+<br>说「在 wire 上是同一条 user 消息」，意思是：代码里可能是 8 个独立结果，但序列化发出去只有一条消息，<em>预算和缓存都按后者算</em>。说「wire 上的顺序是 <code>system → tools → messages</code>」，指的是拼接后的字节顺序，而这三个东西在代码里只是三个独立变量，本来没有先后。
+<br><strong>别和「事件流」混</strong>：那是 <code>AsyncGenerator</code> 逐条 yield，关心时序；wire 关心的是表示形态。两者正交，一份数据可以「以 wire 格式流式传输」。</dd>
+
 <dt>前缀匹配<span class="en">prefix matching</span><span class="ch">05</span></dt>
 <dd>缓存匹配的是「从第一个字节开始的连续一段」，不是「内容相似」。残酷后果：<strong>越靠前的内容改动，代价越大</strong>。system prompt 里一个字符变了（哪怕 "saved 3 days ago" → "4 days ago"），后面全部作废。</dd>
 

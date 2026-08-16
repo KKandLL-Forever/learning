@@ -162,6 +162,8 @@ sleep               50,000      50,000      50,000   已经顶到上限了
 
 <p>但这 8 个结果会一起进入<em>同一条</em> user 消息。这件事第 0003 课已经埋下了：并行工具的结果收集起来，作为一条消息追加到历史里。加起来 232KB。</p>
 
+<p>下面的输出里会出现<strong>「在 wire 上」</strong>这个说法。<code>wire</code> 是网络协议的老词，字面是「电线」，指数据<em>序列化之后、真正发出去的那个形态</em>，和「内存里的对象」相对。这里要强调的是：代码里它们可能是 8 个独立的结果，但发出去只有一条消息，<strong>预算得按发出去的样子算</strong>。</p>
+
 <p class="src-ref">src/constants/toolLimits.ts:35 · 源码注释原文</p>
 <pre><code><span class="cm">// This prevents N parallel tools from each hitting the per-tool max and
 // collectively producing e.g. 10 × 40K = 400K in one turn's user message.</span></code></pre>
