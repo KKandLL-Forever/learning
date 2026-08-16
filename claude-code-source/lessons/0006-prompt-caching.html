@@ -175,13 +175,13 @@ if (cacheReadTokens &gt;= prevCacheRead * 0.95 || tokenDrop &lt; MIN_CACHE_MISS_
 
 <p>只看比例的话，小会话里一点抖动就报警；只看绝对量的话，大会话里掉 3% 也有好几千 token，天天报警。<strong>两个条件是在过滤两种不同的噪音。</strong></p>
 
-<h3>它记了什么</h3>
+<h3>回到 Phase 1：它到底记了些什么</h3>
 
-<p>那个 <code>PreviousState</code> 有 20 个字段（<code>promptCacheBreakDetection.ts:28</code>）。挑几个能看出门道的：</p>
+<p>Phase 1 把指纹存在一个叫 <code>PreviousState</code> 的类型里，20 个字段（<code>src/services/api/promptCacheBreakDetection.ts:28</code>）。挑几个能看出门道的：</p>
 
 <div class="table-wrap">
 <table>
-<thead><tr><th style="width:28%">字段</th><th>它为什么在这儿</th></tr></thead>
+<thead><tr><th style="width:28%">字段</th><th>为什么要盯着这个</th></tr></thead>
 <tbody>
 <tr><td><code>perToolHashes</code></td><td>每个工具的 schema 单独记一份。<strong>工具没增没减但描述变了，占了工具类打穿的 77%</strong>（源码注释里 <code>BQ 2026-03-22</code> 的数据）</td></tr>
 <tr><td><code>cacheControlHash</code></td><td>带着 <code>cache_control</code> 标记一起算的 hash。专门抓 scope 和 TTL 的翻转（global↔org、1h↔5m），这类变化会被普通的 systemHash 抹掉</td></tr>
@@ -193,7 +193,7 @@ if (cacheReadTokens &gt;= prevCacheRead * 0.95 || tokenDrop &lt; MIN_CACHE_MISS_
 
 <p>这张字段表其实是一份事故清单。<strong>每一个字段背后都是一次真的打穿过缓存的改动。</strong></p>
 
-<h3>动手二的后半段：让它说话</h3>
+<h3>动手二的后半段：让侦测器说话</h3>
 
 <p><code>--break</code> 的第二部分跑了四次请求，第 3 次偷偷改一个工具的描述：</p>
 
